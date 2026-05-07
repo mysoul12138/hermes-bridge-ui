@@ -23,17 +23,9 @@ import { primeCompletionSound, playCompletionSound } from '@/utils/completion-so
 import {
   textFromRunEvent,
   numberFromRunEvent,
-  betterToolText,
-  pickToolArgs,
-  pickToolPreview,
-  pickToolCallId,
-  pickToolResult,
-  pickInlineDiff,
-  toolEventDetails,
-  mergeToolResult,
   usageFromRunEvent,
 } from '@/custom/utils/run-event-helpers'
-import { isBuggyReasoningPreview } from '@/custom/utils/display-helpers'
+import { processRunEvent, type RunStreamCallbacks } from '@/custom/utils/sse-stream-manager'
 import {
   storageKey as _storageKey,
   sessionsCacheKey as _sessionsCacheKey,
@@ -1672,342 +1664,151 @@ export const useChatStore = defineStore('chat', () => {
       }, 3000)
     }
 
+    const eventState = { runProducedAssistantText: false, runHadToolActivity: false }
+    const streamCallbacks: RunStreamCallbacks = {
+      getMessages: () => getSessionMsgs(sid),
+      addMessage: (msg) => addMessage(sid, msg),
+      updateMessage: (id, update) => updateMessage(sid, id, update),
+      uid,
+      setCompressionState: (data) => setCompressionState(sid, data),
+      clearCompression: () => clearCompressionForSession(sid),
+      upsertSubagentBranch: (evt) => upsertSubagentBranch(sid, evt),
+      setApprovalPending: (evt) => {
+        setApprovalPending(sid, {
+          approval_id: evt.approval_id,
+          description: evt.description,
+          command: evt.command,
+          pattern_key: evt.pattern_key,
+          pattern_keys: evt.pattern_keys,
+          _session_id: sid,
+        }, evt.pending_count || 1)
+      },
+      startApprovalPolling: () => startApprovalPolling(sid),
+      setClarifyPending: (evt) => {
+        setClarifyPending(sid, {
+          request_id: typeof evt.request_id === 'string' ? evt.request_id : '',
+          question: typeof evt.question === 'string' ? evt.question : '',
+          choices: Array.isArray(evt.choices) ? evt.choices.map(String) : [],
+          requested_at: typeof evt.timestamp === 'number' ? evt.timestamp : undefined,
+          _session_id: sid,
+        })
+      },
+      startClarifyPolling: () => startClarifyPolling(sid),
+      clearApproval: () => {
+        if (approvalsBySession.value[sid]?.pending?._optimistic) clearApproval(sid)
+      },
+      applySessionUsage: (usage) => {
+        const target = sessions.value.find(s => s.id === sid)
+        applySessionUsage(target, usage, { allowReset: true })
+      },
+      persistSessionsList: () => persistSessionsList(),
+      noteThinkingDelta: (messageId, prev, next) => noteThinkingDelta(messageId, prev, next),
+      noteReasoningStart: (messageId) => noteReasoningStart(messageId),
+      noteReasoningEnd: (messageId) => noteReasoningEnd(messageId),
+      appendStreamDelta: (messageId, field, text) => appendStreamDelta(messageId, field, text),
+      flushStreamDeltas: () => flushStreamDeltas(),
+      schedulePersist: () => schedulePersist(),
+    }
+
     const ctrl = streamRunEvents(
       runId,
       (evt: RunEvent) => {
-        switch (evt.event) {
-          case 'run.started':
-            break
-
-          case 'compression.started': {
-            setCompressionState(sid, {
-              status: 'started',
-              messageCount: numberFromRunEvent(evt.message_count),
-              tokenCount: numberFromRunEvent(evt.token_count),
-            })
-            break
+        // Handle run.completed and run.failed in the store (require extensive cleanup)
+        if (evt.event === 'run.completed') {
+          runProducedAssistantText = eventState.runProducedAssistantText
+          runHadToolActivity = eventState.runHadToolActivity
+          const msgs = getSessionMsgs(sid)
+          const lastMsg = msgs[msgs.length - 1]
+          if (lastMsg?.isStreaming) {
+            updateMessage(sid, lastMsg.id, { isStreaming: false })
           }
-
-          case 'compression.completed': {
-            // When compressed=false the compressor skipped the LLM call —
-            // clear the notice immediately instead of showing a misleading "completed" banner.
-            if (evt.compressed === false) {
-              clearCompressionForSession(sid)
-            } else {
-              setCompressionState(sid, {
-                status: evt.error ? 'failed' : 'completed',
-                totalMessages: numberFromRunEvent(evt.totalMessages),
-                resultMessages: numberFromRunEvent(evt.resultMessages),
-                beforeTokens: numberFromRunEvent(evt.beforeTokens),
-                afterTokens: numberFromRunEvent(evt.afterTokens),
-                summaryTokens: numberFromRunEvent(evt.summaryTokens),
-                verbatimCount: numberFromRunEvent(evt.verbatimCount),
-                error: typeof evt.error === 'string' ? evt.error : undefined,
-              })
-            }
-            break
-          }
-
-          case 'subagent.spawn_requested':
-          case 'subagent.start':
-          case 'subagent.thinking':
-          case 'subagent.progress':
-          case 'subagent.status':
-          case 'subagent.tool':
-          case 'subagent.complete':
-          case 'subagent.error': {
-            runHadToolActivity = true
-            const msgs = getSessionMsgs(sid)
-            const last = msgs[msgs.length - 1]
-            if (last?.isStreaming) {
-              updateMessage(sid, last.id, { isStreaming: false })
-            }
-            upsertSubagentBranch(sid, evt)
-            break
-          }
-
-          case 'approval': {
-            setApprovalPending(sid, {
-              approval_id: evt.approval_id,
-              description: evt.description,
-              command: evt.command,
-              pattern_key: evt.pattern_key,
-              pattern_keys: evt.pattern_keys,
-              _session_id: sid,
-            }, evt.pending_count || 1)
-            startApprovalPolling(sid)
-            break
-          }
-
-          case 'clarify': {
-            setClarifyPending(sid, {
-              request_id: typeof evt.request_id === 'string' ? evt.request_id : '',
-              question: typeof evt.question === 'string' ? evt.question : '',
-              choices: Array.isArray(evt.choices) ? evt.choices.map(String) : [],
-              requested_at: typeof evt.timestamp === 'number' ? evt.timestamp : undefined,
-              _session_id: sid,
-            })
-            startClarifyPolling(sid)
-            break
-          }
-
-          case 'reasoning.delta':
-          case 'thinking.delta': {
-            const text = textFromRunEvent(evt)
-            if (!text) break
-            runProducedAssistantText = true
-            const msgs = getSessionMsgs(sid)
-            const last = msgs[msgs.length - 1]
-            if (last?.role === 'assistant' && last.isStreaming) {
-              noteReasoningStart(last.id)
-              appendStreamDelta(last.id, 'reasoning', text)
-            } else {
-              const newId = uid()
-              addMessage(sid, {
-                id: newId,
-                role: 'assistant',
-                content: '',
-                timestamp: Date.now(),
-                isStreaming: true,
-                reasoning: text,
-              })
-              noteReasoningStart(newId)
-              schedulePersist()
-            }
-            break
-          }
-
-          case 'reasoning.available': {
-            flushStreamDeltas()
-            const text = textFromRunEvent(evt)
-            const msgs = getSessionMsgs(sid)
-            const last = msgs[msgs.length - 1]
-            if (last?.role === 'assistant' && last.isStreaming) {
-              const shouldAppendReasoning = text
-                && (!last.reasoning || !last.reasoning.includes(text))
-                && !isBuggyReasoningPreview(text, last.content || '')
-              if (shouldAppendReasoning) {
-                updateMessage(sid, last.id, {
-                  reasoning: last.reasoning ? `${last.reasoning}\n\n${text}` : text,
-                })
-              }
-              noteReasoningEnd(last.id)
-            } else if (text) {
-              const newId = uid()
-              addMessage(sid, {
-                id: newId,
-                role: 'assistant',
-                content: '',
-                timestamp: Date.now(),
-                isStreaming: true,
-                reasoning: text,
-              })
-              noteReasoningStart(newId)
-              noteReasoningEnd(newId)
-            }
-            schedulePersist()
-            break
-          }
-
-          case 'message.delta': {
-            if (evt.delta) runProducedAssistantText = true
-            let msgs = getSessionMsgs(sid)
-            let last = msgs[msgs.length - 1]
-            if (last?.role === 'assistant' && last.isStreaming && pendingStreamDeltas.get(last.id)?.reasoning) {
-              flushStreamDeltas()
-              msgs = getSessionMsgs(sid)
-              last = msgs[msgs.length - 1]
-            }
-            if (last?.role === 'assistant' && last.isStreaming) {
-              appendStreamDelta(last.id, 'content', evt.delta || '')
-            } else {
-              const newId = uid()
-              const nextContent = evt.delta || ''
-              addMessage(sid, {
-                id: newId,
-                role: 'assistant',
-                content: nextContent,
-                timestamp: Date.now(),
-                isStreaming: true,
-              })
-              noteThinkingDelta(newId, '', nextContent)
-              schedulePersist()
-            }
-            break
-          }
-
-          case 'tool.start':
-          case 'tool.started': {
-            flushStreamDeltas()
-            runHadToolActivity = true
-            const msgs = getSessionMsgs(sid)
-            const last = msgs[msgs.length - 1]
-            if (last?.isStreaming) {
-              updateMessage(sid, last.id, { isStreaming: false })
-            }
-            const toolMessage: Message = {
+          const target = sessions.value.find(s => s.id === sid)
+          applySessionUsage(target, usageFromRunEvent(evt))
+          const finalOutput = typeof evt.output === 'string' ? evt.output : ''
+          const eventOutput = finalOutput || textFromRunEvent(evt)
+          const eventOutputTrimmed = eventOutput.trim()
+          if (!runProducedAssistantText && eventOutputTrimmed !== '') {
+            addMessage(sid, {
               id: uid(),
-              role: 'tool',
-              content: '',
+              role: 'assistant',
+              content: eventOutput,
               timestamp: Date.now(),
-              toolName: evt.tool || evt.name || evt.tool_name,
-              toolPreview: pickToolPreview(evt),
-              toolArgs: pickToolArgs(evt),
-              toolCallId: pickToolCallId(evt),
-              toolStatus: 'running',
-            }
-            addMessage(sid, toolMessage)
-            schedulePersist()
-            break
-          }
-
-          case 'tool.progress': {
-            runHadToolActivity = true
-            const msgs = getSessionMsgs(sid)
-            const toolMsgs = msgs.filter(
-              m => m.role === 'tool' && m.toolStatus === 'running',
-            )
-            if (toolMsgs.length > 0) {
-              const eventToolCallId = pickToolCallId(evt)
-              const last = (eventToolCallId && toolMsgs.find(m => m.toolCallId === eventToolCallId))
-                || toolMsgs[toolMsgs.length - 1]
-              updateMessage(sid, last.id, {
-                toolPreview: betterToolText(last.toolPreview, pickToolPreview(evt)),
-                toolArgs: betterToolText(last.toolArgs, pickToolArgs(evt)),
-                toolResult: mergeToolResult(last.toolResult, pickToolResult(evt) || toolEventDetails(evt)),
-                toolInlineDiff: betterToolText(last.toolInlineDiff, pickInlineDiff(evt)),
-                toolCallId: last.toolCallId || eventToolCallId,
-              })
-            }
-            schedulePersist()
-            break
-          }
-
-          case 'tool.complete':
-          case 'tool.completed': {
-            runHadToolActivity = true
-            const msgs = getSessionMsgs(sid)
-            const toolMsgs = msgs.filter(
-              m => m.role === 'tool' && m.toolStatus === 'running',
-            )
-            if (toolMsgs.length > 0) {
-              const eventToolCallId = pickToolCallId(evt)
-              const last = (eventToolCallId && toolMsgs.find(m => m.toolCallId === eventToolCallId))
-                || toolMsgs[toolMsgs.length - 1]
-              updateMessage(sid, last.id, {
-                toolStatus: 'done',
-                toolPreview: betterToolText(last.toolPreview, pickToolPreview(evt)),
-                toolArgs: betterToolText(last.toolArgs, pickToolArgs(evt)),
-                toolResult: mergeToolResult(last.toolResult, pickToolResult(evt) || toolEventDetails(evt)),
-                toolInlineDiff: betterToolText(last.toolInlineDiff, pickInlineDiff(evt)),
-                toolCallId: last.toolCallId || eventToolCallId,
-              })
-            }
-            if (approvalsBySession.value[sid]?.pending?._optimistic) {
-              clearApproval(sid)
-            }
-            schedulePersist()
-            break
-          }
-
-          case 'usage.updated': {
-            const target = sessions.value.find(s => s.id === sid)
-            applySessionUsage(target, usageFromRunEvent(evt), { allowReset: true })
-            persistSessionsList()
-            break
-          }
-
-          case 'run.completed': {
-            const msgs = getSessionMsgs(sid)
-            const lastMsg = msgs[msgs.length - 1]
-            if (lastMsg?.isStreaming) {
-              updateMessage(sid, lastMsg.id, { isStreaming: false })
-            }
-            const target = sessions.value.find(s => s.id === sid)
-            applySessionUsage(target, usageFromRunEvent(evt))
-            const finalOutput = typeof evt.output === 'string' ? evt.output : ''
-            const eventOutput = finalOutput || textFromRunEvent(evt)
-            const eventOutputTrimmed = eventOutput.trim()
-            if (!runProducedAssistantText && eventOutputTrimmed !== '') {
-              addMessage(sid, {
-                id: uid(),
-                role: 'assistant',
-                content: eventOutput,
-                timestamp: Date.now(),
-              })
-              runProducedAssistantText = true
-            }
-            const swallowedError = !runProducedAssistantText && !runHadToolActivity && eventOutputTrimmed === ''
-            if (swallowedError) {
-              addMessage(sid, {
-                id: uid(),
-                role: 'system',
-                content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
-                timestamp: Date.now(),
-              })
-            }
-            if (autoPlaySpeechEnabled.value) {
-              const lastAssistant = [...getSessionMsgs(sid)].reverse().find(m => m.role === 'assistant')
-              if (lastAssistant?.content) {
-                window.setTimeout(() => {
-                  playMessageSpeech(lastAssistant.id, lastAssistant.content)
-                }, 300)
-              }
-            }
-            playCompletionBellIfEnabled()
-            finishLiveSubagentBranches(sid, 'complete')
-            cleanup()
-            updateSessionTitle(sid)
-            persistSessionMessages(sid)
-            persistSessionsList()
-            clearInFlight(sid)
-            stopPolling(sid)
-            stopApprovalPolling(sid)
-            stopClarifyPolling(sid)
-            clearApproval(sid)
-            clearClarify(sid)
-            void refreshSessionAfterRunSettled(sid)
-            break
-          }
-
-          case 'run.failed': {
-            const msgs = getSessionMsgs(sid)
-            const lastErr = msgs[msgs.length - 1]
-            if (lastErr?.isStreaming) {
-              updateMessage(sid, lastErr.id, {
-                isStreaming: false,
-                content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-                role: 'system',
-              })
-            } else {
-              addMessage(sid, {
-                id: uid(),
-                role: 'system',
-                content: evt.error ? `Error: ${evt.error}` : 'Run failed',
-                timestamp: Date.now(),
-              })
-            }
-            msgs.forEach((m, i) => {
-              if (m.role === 'tool' && m.toolStatus === 'running') {
-                msgs[i] = { ...m, toolStatus: 'error' }
-              }
             })
-            if (approvalsBySession.value[sid]?.pending?._optimistic) {
-              clearApproval(sid)
-            }
-            finishLiveSubagentBranches(sid, 'error')
-            cleanup()
-            persistSessionMessages(sid)
-            persistSessionsList()
-            clearInFlight(sid)
-            stopPolling(sid)
-            stopApprovalPolling(sid)
-            stopClarifyPolling(sid)
-            clearApproval(sid)
-            clearClarify(sid)
-            break
+            runProducedAssistantText = true
           }
+          const swallowedError = !runProducedAssistantText && !runHadToolActivity && eventOutputTrimmed === ''
+          if (swallowedError) {
+            addMessage(sid, {
+              id: uid(),
+              role: 'system',
+              content: 'Error: Agent returned no output. The model call may have failed (e.g. invalid API key, model not supported by provider, or context exceeded). Check the hermes-agent logs for details.',
+              timestamp: Date.now(),
+            })
+          }
+          if (autoPlaySpeechEnabled.value) {
+            const lastAssistant = [...getSessionMsgs(sid)].reverse().find(m => m.role === 'assistant')
+            if (lastAssistant?.content) {
+              window.setTimeout(() => {
+                playMessageSpeech(lastAssistant.id, lastAssistant.content)
+              }, 300)
+            }
+          }
+          playCompletionBellIfEnabled()
+          finishLiveSubagentBranches(sid, 'complete')
+          cleanup()
+          updateSessionTitle(sid)
+          persistSessionMessages(sid)
+          persistSessionsList()
+          clearInFlight(sid)
+          stopPolling(sid)
+          stopApprovalPolling(sid)
+          stopClarifyPolling(sid)
+          clearApproval(sid)
+          clearClarify(sid)
+          void refreshSessionAfterRunSettled(sid)
+          return
         }
+
+        if (evt.event === 'run.failed') {
+          const msgs = getSessionMsgs(sid)
+          const lastErr = msgs[msgs.length - 1]
+          if (lastErr?.isStreaming) {
+            updateMessage(sid, lastErr.id, {
+              isStreaming: false,
+              content: evt.error ? `Error: ${evt.error}` : 'Run failed',
+              role: 'system',
+            })
+          } else {
+            addMessage(sid, {
+              id: uid(),
+              role: 'system',
+              content: evt.error ? `Error: ${evt.error}` : 'Run failed',
+              timestamp: Date.now(),
+            })
+          }
+          msgs.forEach((m, i) => {
+            if (m.role === 'tool' && m.toolStatus === 'running') {
+              msgs[i] = { ...m, toolStatus: 'error' }
+            }
+          })
+          if (approvalsBySession.value[sid]?.pending?._optimistic) {
+            clearApproval(sid)
+          }
+          finishLiveSubagentBranches(sid, 'error')
+          cleanup()
+          persistSessionMessages(sid)
+          persistSessionsList()
+          clearInFlight(sid)
+          stopPolling(sid)
+          stopApprovalPolling(sid)
+          stopClarifyPolling(sid)
+          clearApproval(sid)
+          clearClarify(sid)
+          return
+        }
+
+        // All other events handled by the extracted SSE stream manager
+        processRunEvent(evt, streamCallbacks, eventState)
       },
       () => {
         const msgs = getSessionMsgs(sid)
