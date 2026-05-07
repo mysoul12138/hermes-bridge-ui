@@ -283,6 +283,12 @@ watch(
       scrollToMessage(chatStore.focusMessageId, id);
       return;
     }
+    // If the session has an active run or streaming content, always scroll
+    // to bottom to show the latest messages — don't restore stale position.
+    if (chatStore.isSessionLive(id) || chatStore.isRunActive) {
+      scrollToBottom(false, id);
+      return;
+    }
     if (scrollPositions.has(id)) {
       restoreScrollTop(scrollPositions.get(id)!, id);
       return;

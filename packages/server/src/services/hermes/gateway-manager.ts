@@ -81,7 +81,17 @@ function detectInitSystem(): string {
       const comm = readFileSync('/proc/1/comm', 'utf-8').trim()
 
       if (comm === 'systemd') {
-        return existsSync('/run/systemd/system') ? 'systemd' : 'other'
+        if (!existsSync('/run/systemd/system')) return 'other'
+        // Verify systemctl --user works AND the hermes-gateway service unit
+        // is installed.  WSL2 often has systemd but no gateway service file,
+        // which causes "Unit hermes-gateway.service not found" errors.
+        try {
+          const { execSync } = require('child_process')
+          execSync('systemctl --user status hermes-gateway', { timeout: 3000, stdio: 'ignore' })
+          return 'systemd'
+        } catch {
+          return 'other'
+        }
       }
       if (comm === 'init') return 'sysvinit'
 
