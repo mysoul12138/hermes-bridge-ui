@@ -450,18 +450,28 @@ export class GatewayManager {
 
     if (needsRunMode) {
       // WSL / Docker：无 systemd/launchd，用 "gateway run" 作为 detached 子进程
+      // Redirect stdout/stderr to a log file so crashes are diagnosable.
       return new Promise((resolve, reject) => {
         const env = { ...process.env, HERMES_HOME: hermesHome }
+        const logPath = `/tmp/hermes-gateway-${name}.log`
+        let logFd: number | undefined
+        try {
+          const { openSync } = require('node:fs')
+          logFd = openSync(logPath, 'a')
+        } catch { /* ignore — fall back to ignore */ }
         const child = spawn(HERMES_BIN, ['gateway', 'run', '--replace'], {
           detached: true,
-          stdio: 'ignore',
+          stdio: logFd != null ? ['ignore', logFd, logFd] : 'ignore',
           windowsHide: true,
           env,
         })
         child.unref()
+        if (logFd != null) {
+          try { require('node:fs').closeSync(logFd) } catch { /* ignore */ }
+        }
 
         const pid = child.pid ?? 0
-        logger.info('Starting gateway for profile "%s" (run mode, PID: %d, port: %d)', name, pid, port)
+        logger.info('Starting gateway for profile "%s" (run mode, PID: %d, port: %d, log: %s)', name, pid, port, logPath)
 
         this.waitForReady(name, pid, port, host, url)
           .then(resolve)
