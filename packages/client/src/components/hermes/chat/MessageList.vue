@@ -220,31 +220,37 @@ function restoreScrollTop(top: number, sessionId = chatStore.activeSessionId) {
 
 function scrollToBottom(smooth = false, sessionId = chatStore.activeSessionId) {
   const token = ++scrollRequestToken;
-  nextTick(() => {
-    const el = listRef.value;
-    if (token !== scrollRequestToken || sessionId !== chatStore.activeSessionId) return;
-    if (el) {
-      if (smooth && typeof el.scrollTo === "function") {
-        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-      } else {
-        el.scrollTop = el.scrollHeight;
+  // Double rAF: first waits for Vue render, second waits for browser layout/paint.
+  // This ensures scrollHeight is at its final value even for large reasoning blocks.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      const el = listRef.value;
+      if (token !== scrollRequestToken || sessionId !== chatStore.activeSessionId) return;
+      if (el) {
+        if (smooth && typeof el.scrollTo === "function") {
+          el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+        } else {
+          el.scrollTop = el.scrollHeight;
+        }
+        updateLatestState();
+        revealCustomScrollbar();
       }
-      updateLatestState();
-      revealCustomScrollbar();
-    }
+    });
   });
 }
 
 function scrollToMessage(messageId: string, sessionId = chatStore.activeSessionId) {
   const token = ++scrollRequestToken;
-  nextTick(() => {
-    if (token !== scrollRequestToken || sessionId !== chatStore.activeSessionId) return;
-    const el = document.getElementById(`message-${messageId}`);
-    if (el) {
-      el.scrollIntoView({ block: 'center' });
-      updateLatestState();
-      revealCustomScrollbar();
-    }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (token !== scrollRequestToken || sessionId !== chatStore.activeSessionId) return;
+      const el = document.getElementById(`message-${messageId}`);
+      if (el) {
+        el.scrollIntoView({ block: 'center' });
+        updateLatestState();
+        revealCustomScrollbar();
+      }
+    });
   });
 }
 
