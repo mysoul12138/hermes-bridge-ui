@@ -9,6 +9,10 @@ vi.mock('../../packages/server/src/services/hermes/hermes-profile', () => ({
   getActiveProfileDir: () => profileDirState.value,
 }))
 
+vi.mock('../../packages/server/src/services/hermes/tui-live', () => ({
+  listLiveTuiSessionKeys: vi.fn().mockResolvedValue(new Set()),
+}))
+
 function ensureSqliteAvailable() {
   const [major, minor] = process.versions.node.split('.').map(Number)
   if (major < 22 || (major === 22 && minor < 5)) {

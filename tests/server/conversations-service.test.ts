@@ -6,6 +6,10 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   exportSessionsRaw: exportSessionsRawMock,
 }))
 
+vi.mock('../../packages/server/src/services/hermes/tui-live', () => ({
+  listLiveTuiSessionKeys: vi.fn().mockResolvedValue(new Set()),
+}))
+
 describe('conversations service', () => {
   beforeEach(() => {
     vi.resetModules()
