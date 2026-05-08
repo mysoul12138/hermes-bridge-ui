@@ -535,9 +535,9 @@ export class GatewayManager {
     return this.waitForReady(name, 0, port, host, url)
   }
 
-  /** 等待网关健康检查通过，最多 15 秒 */
+  /** 等待网关健康检查通过，最多 30 秒（MCP server 重试可能需要 15+ 秒） */
   private async waitForReady(name: string, pid: number, port: number, host: string, url: string): Promise<GatewayStatus> {
-    const deadline = Date.now() + 15000
+    const deadline = Date.now() + 30000
     while (Date.now() < deadline) {
       if (pid && !this.isProcessAlive(pid)) {
         throw new Error(`Gateway process exited unexpectedly (PID: ${pid})`)
