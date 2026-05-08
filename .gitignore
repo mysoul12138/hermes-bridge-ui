@@ -38,3 +38,6 @@ output/
 
 # IDE
 .claude/
+
+# Client source map artifacts
+packages/client/src/**/*.js
