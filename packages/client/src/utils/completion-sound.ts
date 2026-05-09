@@ -5,6 +5,8 @@ type WindowWithWebkitAudio = Window & typeof globalThis & {
 }
 
 let audioContext: AudioContext | null = null
+let audioBuffer: AudioBuffer | null = null
+let loadPromise: Promise<void> | null = null
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null
@@ -19,6 +21,22 @@ function getAudioContext(): AudioContext | null {
   return audioContext
 }
 
+function ensureLoaded(): Promise<void> {
+  if (loadPromise) return loadPromise
+  loadPromise = (async () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    try {
+      const resp = await fetch('/3924.wav')
+      const arrayBuf = await resp.arrayBuffer()
+      audioBuffer = await ctx.decodeAudioData(arrayBuf)
+    } catch {
+      loadPromise = null // allow retry
+    }
+  })()
+  return loadPromise
+}
+
 export function primeCompletionSound(): void {
   const ctx = getAudioContext()
   if (!ctx || ctx.state !== 'suspended') return
@@ -27,6 +45,9 @@ export function primeCompletionSound(): void {
     // Browser autoplay policy may still reject until a user gesture. Ignore; the
     // next send action will try again.
   })
+
+  // Pre-load audio file
+  ensureLoaded()
 }
 
 export async function playCompletionSound(): Promise<boolean> {
@@ -38,25 +59,20 @@ export async function playCompletionSound(): Promise<boolean> {
       await ctx.resume()
     }
 
-    const now = ctx.currentTime
-    const duration = 0.16
-    const oscillator = ctx.createOscillator()
-    const gain = ctx.createGain()
+    // Ensure audio is loaded (handles both "not started" and "still loading")
+    if (!audioBuffer) {
+      await ensureLoaded()
+    }
 
-    oscillator.type = 'sine'
-    oscillator.frequency.setValueAtTime(880, now)
-    oscillator.frequency.exponentialRampToValueAtTime(660, now + duration)
+    if (audioBuffer) {
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(ctx.destination)
+      source.start()
+      return true
+    }
 
-    gain.gain.setValueAtTime(0.0001, now)
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.015)
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration)
-
-    oscillator.connect(gain)
-    gain.connect(ctx.destination)
-    oscillator.start(now)
-    oscillator.stop(now + duration)
-
-    return true
+    return false
   } catch (err) {
     console.warn('Failed to play completion sound:', err)
     return false
@@ -65,4 +81,6 @@ export async function playCompletionSound(): Promise<boolean> {
 
 export function __resetCompletionSoundForTests(): void {
   audioContext = null
+  audioBuffer = null
+  loadPromise = null
 }
