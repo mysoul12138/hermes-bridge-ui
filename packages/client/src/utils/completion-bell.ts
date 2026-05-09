@@ -1,7 +1,7 @@
 let audioContext: AudioContext | null = null
 let unlocked = false
 let audioBuffer: AudioBuffer | null = null
-let loading = false
+let loadPromise: Promise<void> | null = null
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null
@@ -26,48 +26,53 @@ export function unlockCompletionBell() {
       oscillator.stop(ctx.currentTime + 0.01)
       unlocked = true
       // Pre-load the audio file
-      loadBellAudio()
+      ensureLoaded()
     })
     .catch(() => {
       // Browsers may reject until a direct user gesture; the next send will retry.
     })
 }
 
-async function loadBellAudio() {
+function ensureLoaded(): Promise<void> {
+  if (loadPromise) return loadPromise
+  loadPromise = (async () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    try {
+      const resp = await fetch('/3924.wav')
+      const arrayBuf = await resp.arrayBuffer()
+      audioBuffer = await ctx.decodeAudioData(arrayBuf)
+    } catch {
+      loadPromise = null // allow retry
+    }
+  })()
+  return loadPromise
+}
+
+function doPlay() {
   const ctx = getAudioContext()
-  if (!ctx || audioBuffer || loading) return
-  loading = true
-  try {
-    const resp = await fetch('/3924.wav')
-    const arrayBuf = await resp.arrayBuffer()
-    audioBuffer = await ctx.decodeAudioData(arrayBuf)
-  } catch {
-    // Failed to load; will retry on next play
-    loading = false
-  }
+  if (!ctx || !audioBuffer) return
+  const source = ctx.createBufferSource()
+  source.buffer = audioBuffer
+  source.connect(ctx.destination)
+  source.start()
 }
 
 export function playCompletionBell() {
   const ctx = getAudioContext()
   if (!ctx) return
 
-  const play = () => {
-    if (audioBuffer) {
-      const source = ctx.createBufferSource()
-      source.buffer = audioBuffer
-      source.connect(ctx.destination)
-      source.start()
-    }
-  }
+  const play = () => doPlay()
 
   if (ctx.state === 'suspended') {
     ctx.resume().then(play).catch(() => {})
     return
   }
 
-  if (!audioBuffer && !loading) {
-    loadBellAudio().then(play)
-    return
+  if (audioBuffer) {
+    play()
+  } else {
+    // Load first, then play — handles both "not started" and "still loading"
+    ensureLoaded().then(play)
   }
-  play()
 }
