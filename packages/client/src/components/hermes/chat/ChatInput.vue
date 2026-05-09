@@ -673,6 +673,8 @@ function isImage(type: string): boolean {
 
 .input-textarea {
   flex: 1;
+  width: 0;
+  min-width: 0;
   background: none;
   border: none;
   outline: none;
