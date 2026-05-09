@@ -538,9 +538,14 @@ export class GatewayManager {
   /** 等待网关健康检查通过，最多 30 秒（MCP server 重试可能需要 15+ 秒） */
   private async waitForReady(name: string, pid: number, port: number, host: string, url: string): Promise<GatewayStatus> {
     const deadline = Date.now() + 30000
+    let initialPidExited = false
     while (Date.now() < deadline) {
-      if (pid && !this.isProcessAlive(pid)) {
-        throw new Error(`Gateway process exited unexpectedly (PID: ${pid})`)
+      // Check if the spawned process is still alive.  The gateway may fork
+      // or restart internally (e.g. --replace kills old and respawns), so
+      // the initial PID dying is NOT fatal — fall through to health check.
+      if (pid && !this.isProcessAlive(pid) && !initialPidExited) {
+        initialPidExited = true
+        logger.debug('Gateway initial PID %d exited, waiting for health check (may have forked)', pid)
       }
       if (await this.checkHealth(url, 2000)) {
         // "gateway start" 自行管理进程，重新从 pid 文件读取实际 PID
@@ -550,7 +555,7 @@ export class GatewayManager {
       }
       await new Promise(r => setTimeout(r, 500))
     }
-    throw new Error(`Gateway health check timed out after 15000ms`)
+    throw new Error(`Gateway health check timed out after 30000ms`)
   }
 
   /**
