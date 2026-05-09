@@ -1,5 +1,7 @@
 let audioContext: AudioContext | null = null
 let unlocked = false
+let audioBuffer: AudioBuffer | null = null
+let loading = false
 
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') return null
@@ -23,37 +25,38 @@ export function unlockCompletionBell() {
       oscillator.start()
       oscillator.stop(ctx.currentTime + 0.01)
       unlocked = true
+      // Pre-load the audio file
+      loadBellAudio()
     })
     .catch(() => {
       // Browsers may reject until a direct user gesture; the next send will retry.
     })
 }
 
+async function loadBellAudio() {
+  const ctx = getAudioContext()
+  if (!ctx || audioBuffer || loading) return
+  loading = true
+  try {
+    const resp = await fetch('/3924.wav')
+    const arrayBuf = await resp.arrayBuffer()
+    audioBuffer = await ctx.decodeAudioData(arrayBuf)
+  } catch {
+    // Failed to load; will retry on next play
+    loading = false
+  }
+}
+
 export function playCompletionBell() {
   const ctx = getAudioContext()
   if (!ctx) return
-  const start = ctx.currentTime
 
   const play = () => {
-    // Three-note ascending arpeggio (E5 → G#5 → B5) with harmonics
-    const notes = [
-      { frequency: 659, offset: 0.0,  duration: 0.28 },
-      { frequency: 831, offset: 0.10, duration: 0.26 },
-      { frequency: 988, offset: 0.20, duration: 0.32 },
-    ]
-
-    for (const note of notes) {
-      // Fundamental — warm sine
-      _playTone(ctx, note.frequency, start + note.offset, note.duration, 0.14)
-      // 2nd harmonic (octave up) — adds body
-      _playTone(ctx, note.frequency * 2, start + note.offset, note.duration * 0.6, 0.025)
-      // 3rd harmonic — adds shimmer
-      _playTone(ctx, note.frequency * 3, start + note.offset, note.duration * 0.35, 0.008)
-    }
-
-    // Reverb tail — faint delayed echoes
-    for (const note of notes) {
-      _playTone(ctx, note.frequency, start + note.offset + 0.06, note.duration * 1.1, 0.015)
+    if (audioBuffer) {
+      const source = ctx.createBufferSource()
+      source.buffer = audioBuffer
+      source.connect(ctx.destination)
+      source.start()
     }
   }
 
@@ -61,30 +64,10 @@ export function playCompletionBell() {
     ctx.resume().then(play).catch(() => {})
     return
   }
+
+  if (!audioBuffer && !loading) {
+    loadBellAudio().then(play)
+    return
+  }
   play()
-}
-
-function _playTone(
-  ctx: AudioContext,
-  freq: number,
-  t0: number,
-  dur: number,
-  peak: number,
-) {
-  const osc = ctx.createOscillator()
-  const g = ctx.createGain()
-
-  osc.type = 'sine'
-  osc.frequency.setValueAtTime(freq, t0)
-
-  // Smooth attack–decay envelope
-  g.gain.setValueAtTime(0.0001, t0)
-  g.gain.exponentialRampToValueAtTime(peak, t0 + 0.008)
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur)
-
-  osc.connect(g)
-  g.connect(ctx.destination)
-
-  osc.start(t0)
-  osc.stop(t0 + dur + 0.02)
 }
