@@ -1990,11 +1990,17 @@ export const useChatStore = defineStore('chat', () => {
     // not currently streaming, start polling fetchSession to pick up progress
     // that happened while we were gone. Exits automatically on stability.
     if (readInFlight(sessionId) && !streamStates.value.has(sessionId)) {
-      resumeInFlightRun(sessionId)
-      void pollApprovalOnce(sessionId)
-      startApprovalPolling(sessionId)
-      void pollClarifyOnce(sessionId)
-      startClarifyPolling(sessionId)
+      // If the server already shows this session as ended, the in-flight
+      // record is stale — clear it and skip resume to avoid blocking the UI.
+      if (activeSession.value?.endedAt != null) {
+        clearInFlight(sessionId)
+      } else {
+        resumeInFlightRun(sessionId)
+        void pollApprovalOnce(sessionId)
+        startApprovalPolling(sessionId)
+        void pollClarifyOnce(sessionId)
+        startClarifyPolling(sessionId)
+      }
     }
 
     // Fetch token usage for this session from web-ui DB
@@ -2494,15 +2500,21 @@ export const useChatStore = defineStore('chat', () => {
 
   // Tab visibility: re-sync when returning to foreground
   if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => {
+    document.addEventListener('visibilitychange', async () => {
       if (document.visibilityState === 'visible' && activeSessionId.value && !isStreaming.value) {
-        void refreshActiveSession()
+        await refreshActiveSession()
         if (readInFlight(activeSessionId.value)) {
-          resumeInFlightRun(activeSessionId.value)
-          void pollApprovalOnce(activeSessionId.value)
-          startApprovalPolling(activeSessionId.value)
-          void pollClarifyOnce(activeSessionId.value)
-          startClarifyPolling(activeSessionId.value)
+          // If the server already shows this session as ended, the in-flight
+          // record is stale — clear it and skip resume.
+          if (activeSession.value?.endedAt != null) {
+            clearInFlight(activeSessionId.value)
+          } else {
+            resumeInFlightRun(activeSessionId.value)
+            void pollApprovalOnce(activeSessionId.value)
+            startApprovalPolling(activeSessionId.value)
+            void pollClarifyOnce(activeSessionId.value)
+            startClarifyPolling(activeSessionId.value)
+          }
         }
       }
     })

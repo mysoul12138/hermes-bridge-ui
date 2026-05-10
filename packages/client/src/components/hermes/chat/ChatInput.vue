@@ -342,6 +342,9 @@ function isImage(type: string): boolean {
     <div v-if="willQueueInput" class="busy-input-feedback">
       <span>{{ queuedCount > 0 ? t('chat.busyInputQueued', { count: queuedCount }) : t('chat.busyInputWillQueue') }}</span>
     </div>
+    <div v-if="chatStore.isRunActive && !inputText.trim()" class="busy-input-hint">
+      {{ willSteerInput ? t('chat.busyInputWillSteer') : t('chat.busyInputWillQueue') }}
+    </div>
 
     <!-- Attachment previews -->
     <div v-if="attachments.length > 0" class="attachment-previews">
@@ -375,13 +378,7 @@ function isImage(type: string): boolean {
       @dragleave="handleDragLeave"
       @drop="handleDrop"
     >
-      <input
-        ref="fileInputRef"
-        type="file"
-        multiple
-        class="file-input-hidden"
-        @change="handleFileChange"
-      />
+      <input ref="fileInputRef" type="file" multiple class="file-input-hidden" @change="handleFileChange" />
       <textarea
         ref="textareaRef"
         v-model="inputText"
@@ -394,9 +391,6 @@ function isImage(type: string): boolean {
         @input="handleInput"
         @paste="handlePaste"
       ></textarea>
-      <div v-if="chatStore.isRunActive" class="busy-input-hint">
-        {{ willSteerInput ? t('chat.busyInputWillSteer') : t('chat.busyInputWillQueue') }}
-      </div>
       <div class="input-actions">
         <NButton
           v-if="chatStore.isRunActive"
@@ -710,9 +704,9 @@ function isImage(type: string): boolean {
 }
 
 .busy-input-hint {
+  margin: 4px 0 2px;
   font-size: 12px;
   color: $text-muted;
-  padding: 4px 0 2px;
   font-style: italic;
 }
 </style>
