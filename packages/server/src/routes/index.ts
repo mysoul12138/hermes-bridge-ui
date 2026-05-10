@@ -43,6 +43,7 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   app.use(healthRoutes.routes())
   app.use(webhookRoutes.routes())
   app.use(authPublicRoutes.routes())
+  app.use(ttsRoutes.routes())              // TTS proxy/generation — must be before auth
 
   // --- Auth middleware: all routes below require authentication ---
   app.use(requireAuth)

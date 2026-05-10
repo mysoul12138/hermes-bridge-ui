@@ -15,6 +15,7 @@ import PrivacySettings from "@/components/hermes/settings/PrivacySettings.vue";
 import ModelSettings from "@/components/hermes/settings/ModelSettings.vue";
 import AccountSettings from "@/components/hermes/settings/AccountSettings.vue";
 import WebUiSettings from "@/components/hermes/settings/WebUiSettings.vue";
+import VoiceSettings from "@/components/hermes/settings/VoiceSettings.vue";
 
 const settingsStore = useSettingsStore();
 const { t } = useI18n();
@@ -60,6 +61,9 @@ onMounted(() => {
           </NTabPane>
           <NTabPane name="webui" :tab="t('settings.tabs.webui')">
             <WebUiSettings />
+          </NTabPane>
+          <NTabPane name="voice" :tab="t('settings.tabs.voice')">
+            <VoiceSettings />
           </NTabPane>
         </NTabs>
       </NSpin>
