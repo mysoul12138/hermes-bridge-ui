@@ -73,7 +73,6 @@ export function registerRoutes(app: any, requireAuth: (ctx: Context, next: Next)
   app.use(approvalRoutes.routes())
   app.use(clarifyRoutes.routes())
   app.use(cronHistoryRoutes.routes())        // Must be before proxy
-  app.use(ttsRoutes.routes())                // Must be before proxy
   app.use(kanbanRoutes.routes())             // Must be before proxy
   app.use(proxyRoutes.routes())
 

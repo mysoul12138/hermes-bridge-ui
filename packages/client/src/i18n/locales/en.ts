@@ -1085,6 +1085,7 @@ export default {
     new_0_5_14_2: 'Fix terminal panel connecting on mount causing PTY resource exhaustion, switch to lazy connect',
     new_0_5_14_3: 'Fix WSL2 health check failure caused by IPv6 dual-stack binding',
     new_0_5_14_4: 'Fix SQLite connection not released on shutdown causing database lock on restart',
+      new_0_5_14_5: 'Migrate to Responses API for faster streaming and improved message merging',
     new_0_5_15_1: 'Add Kanban board for visual task and session management',
     new_0_5_15_2: 'Add official landing page and documentation website',
     new_0_5_15_3: 'Fix group-chat agent client to use dynamic port instead of hardcoded 8648',
