@@ -31,13 +31,6 @@ hermes-dependencies.md
 *.sln
 *.sw?
 .superpowers/
-# Preview & debug artifacts
-output/
-.playwright-cli/
-.tmp-debug-*/
-
-# IDE
-.claude/
-
+CLAUDE.md
 # Client source map artifacts
 packages/client/src/**/*.js

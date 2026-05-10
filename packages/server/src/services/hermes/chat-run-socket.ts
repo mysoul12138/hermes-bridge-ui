@@ -9,9 +9,6 @@
  * the client emits 'resume' to rejoin its session room.
  */
 import type { Server, Socket } from 'socket.io'
-import { EventSource } from 'eventsource'
-import { setRunSession } from '../../routes/hermes/proxy-handler'
-import { updateUsage } from '../../db/hermes/usage-store'
 import { getSystemPrompt } from '../../lib/llm-prompt'
 import {
   getSession,
@@ -29,6 +26,7 @@ import { getModelContextLength } from './model-context'
 import { ChatContextCompressor, countTokens, SUMMARY_PREFIX } from '../../lib/context-compressor'
 import { getCompressionSnapshot } from '../../db/hermes/compression-snapshot'
 import { parseLLMJSON, parseToolArguments, parseAnthropicContentArray } from '../../lib/llm-json'
+import { updateUsage } from '../../db/hermes/usage-store'
 import { logger } from '../logger'
 
 /**
@@ -136,7 +134,7 @@ interface SessionMessage {
   session_id: string
   role: string
   content: string
-  hermesSessionId?: string
+  runMarker?: string
   tool_call_id?: string | null
   tool_calls?: any[] | null
   tool_name?: string | null
@@ -146,7 +144,6 @@ interface SessionMessage {
   reasoning?: string | null
   reasoning_details?: string | null
   reasoning_content?: string | null
-  codex_reasoning_items?: string | null
 }
 
 interface QueuedRun {
@@ -162,13 +159,20 @@ interface SessionState {
   isWorking: boolean
   events: Array<{ event: string; data: any }>
   abortController?: AbortController
-  eventSource?: EventSource
   runId?: string
   profile?: string
   inputTokens?: number
   outputTokens?: number
   isAborting?: boolean
   queue: QueuedRun[]
+  responseRun?: ResponseRunState
+}
+
+interface ResponseRunState {
+  runMarker?: string
+  responseId?: string
+  insertedKeys: Set<string>
+  toolCalls: Map<string, any>
 }
 
 // --- ChatRunSocket ---
@@ -479,9 +483,9 @@ export class ChatRunSocket {
     const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
     const apiKey = this.gatewayManager.getApiKey(profile) || undefined
 
-    // Generate ephemeral session ID for Hermes (fresh session per run)
-    const hermesSessionId = session_id
-      ? `eph_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+    // Local marker used only to group in-memory messages for this streamed response.
+    const runMarker = session_id
+      ? `resp_run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
       : undefined
 
     const now = Math.floor(Date.now() / 1000)
@@ -494,7 +498,6 @@ export class ChatRunSocket {
           : { messages: [], isWorking: false, events: [], queue: [] }
         this.sessionMap.set(session_id, state)
       }
-      this.hermesSessionIds.set(session_id, hermesSessionId)
       state.isWorking = true
       state.profile = profile
 
@@ -504,7 +507,7 @@ export class ChatRunSocket {
         state.messages.push({
           id: state.messages.length + 1,
           session_id,
-          hermesSessionId,
+          runMarker,
           role: 'user',
           content: inputStr,
           timestamp: now,
@@ -531,7 +534,7 @@ export class ChatRunSocket {
         state.messages.push({
           id: state.messages.length + 1,
           session_id,
-          hermesSessionId,
+          runMarker,
           role: 'user',
           content: inputStr,
           timestamp: now,
@@ -564,7 +567,6 @@ export class ChatRunSocket {
     try {
       // Build upstream request body
       const body: Record<string, any> = { input }
-      if (hermesSessionId) body.session_id = hermesSessionId
       if (model) body.model = model
       if (instructions) {
         body.instructions = `${getSystemPrompt()}\n${instructions}`
@@ -892,11 +894,22 @@ export class ChatRunSocket {
       if (body.conversation_history && Array.isArray(body.conversation_history)) {
         body.conversation_history = convertHistoryFormat(body.conversation_history)
       }
-      const res = await fetch(`${upstream}/v1/runs`, {
+      body.stream = true
+      body.store = false
+
+      const abortController = new AbortController()
+      if (session_id) {
+        const state = this.getOrCreateSession(session_id)
+        state.isWorking = true
+        state.runId = undefined
+        state.abortController = abortController
+      }
+
+      const res = await fetch(`${upstream}/v1/responses`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(120_000),
+        signal: abortController.signal,
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
@@ -906,295 +919,94 @@ export class ChatRunSocket {
         if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
         return
       }
-
-      const runData = await res.json() as any
-      const runId = runData.run_id
-      if (!runId) {
+      if (!res.body) {
         const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
         if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed' })
-        emit('run.failed', { event: 'run.failed', error: 'No run_id in upstream response', queue_remaining: queueLen })
+        emit('run.failed', { event: 'run.failed', error: 'Upstream response stream missing', queue_remaining: queueLen })
         if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
         return
       }
 
-      if (session_id) {
-        setRunSession(runId, session_id)
-      }
-
-      const abortController = new AbortController()
-      if (session_id) {
-        const state = this.getOrCreateSession(session_id)
-        state.isWorking = true
-        state.runId = runId
-        state.abortController = abortController
-      }
-
-      emit('run.started', {
-        event: 'run.started',
-        run_id: runId,
-        status: runData.status,
-        queue_length: session_id ? this.sessionMap.get(session_id)?.queue.length || 0 : 0,
-      })
-
-      // Stream upstream events via EventSource — survives socket disconnect
-      const eventsUrl = new URL(`${upstream}/v1/runs/${runId}/events`)
-
-      // Use Authorization header instead of query parameter for better compatibility
-      const eventSourceInit: any = apiKey ? {
-        fetch: (url: string, init: any = {}) => fetch(url, {
-          ...init,
-          headers: {
-            ...(init.headers || {}),
-            Authorization: `Bearer ${apiKey}`,
-          },
-        }),
-      } : {}
-
-      // @ts-ignore - eventsource library types are too strict
-      const source = new EventSource(eventsUrl.toString(), eventSourceInit)
-      if (session_id) {
-        const state = this.getOrCreateSession(session_id)
-        state.eventSource = source
-      }
-
-      source.onmessage = async (event: MessageEvent) => {
+      let responseId: string | undefined
+      for await (const frame of readSseFrames(res.body)) {
+        let parsed: any
         try {
-          const parsed = JSON.parse(event.data as string)
-          // Debug: log all events from upstream
-          if (parsed.event?.includes('reasoning') || parsed.event?.includes('thinking')) {
-            logger.info('[chat-run-socket] upstream event: %s, data: %j', parsed.event, parsed)
-          } else {
-            logger.info('[chat-run-socket] upstream event: %s', parsed.event)
-          }
+          parsed = JSON.parse(frame.data)
+        } catch {
+          continue
+        }
+        const upstreamEvent = parsed.type || frame.event || parsed.event
+        logger.info('[chat-run-socket] upstream response event: %s', upstreamEvent)
 
-          // Track messages into sessionMap
-          if (session_id) {
-            const state = this.sessionMap.get(session_id)
-            if (state) {
-              const msgs = state.messages
-              const last = [...msgs].reverse().find(m => m.hermesSessionId === hermesSessionId)
-
-              switch (parsed.event) {
-                case 'message.delta': {
-                  let deltaText = parsed.delta || ''
-
-                  // Try to extract text from JSON delta (e.g., "[{\"type\":\"text\",\"text\":\"hello\"}]")
-                  if (deltaText.trim().startsWith('[') && deltaText.trim().endsWith(']')) {
-                    try {
-                      const parsedDelta = parseAnthropicContentArray(deltaText)
-                      const textParts = parsedDelta
-                        .filter((b: any) => b.type === 'text')
-                        .map((b: any) => b.text || '')
-                      deltaText = textParts.join('')
-                    } catch {
-                      // If parsing fails, use delta as-is
-                    }
-                  }
-
-                  if (last?.role === 'assistant' && last.finish_reason == null) {
-                    last.content += deltaText
-                  } else {
-                    msgs.push({
-                      id: msgs.length + 1,
-                      session_id,
-                      hermesSessionId,
-                      role: 'assistant',
-                      content: deltaText,
-                      timestamp: Math.floor(Date.now() / 1000),
-                    })
-                  }
-                  break
-                }
-                case 'reasoning.delta':
-                case 'thinking.delta': {
-                  const text = parsed.text || parsed.delta || ''
-                  if (!text) break
-                  if (last?.role === 'assistant' && last.finish_reason == null) {
-                    last.reasoning = (last.reasoning || '') + text
-                  } else {
-                    msgs.push({
-                      id: msgs.length + 1,
-                      session_id,
-                      role: 'assistant',
-                      hermesSessionId,
-                      content: '',
-                      reasoning: text,
-                      timestamp: Math.floor(Date.now() / 1000),
-                    })
-                  }
-                  break
-                }
-                case 'tool.started': {
-                  if (last?.role === 'assistant' && last.finish_reason == null) {
-                    last.finish_reason = 'tool_calls'
-                  }
-                  msgs.push({
-                    id: msgs.length + 1,
-                    session_id,
-                    role: 'tool',
-                    hermesSessionId,
-                    content: '',
-                    tool_call_id: parsed.tool_call_id || null,
-                    tool_name: parsed.tool || parsed.name || null,
-                    timestamp: Math.floor(Date.now() / 1000),
-                  })
-                  break
-                }
-                case 'tool.completed': {
-                  const toolMsg = [...msgs].reverse().find(m =>
-                    m.hermesSessionId === hermesSessionId && m.role === 'tool' && !m.content
-                  )
-                  if (toolMsg && parsed.output) {
-                    toolMsg.content = typeof parsed.output === 'string' ? parsed.output : JSON.stringify(parsed.output)
-                  }
-                  break
-                }
-                case 'run.completed': {
-                  logger.info('[chat-run-socket] ENTER run.completed case, session_id: %s, messages: %d',
-                    session_id, msgs.length)
-
-                  if (last?.role === 'assistant' && last.finish_reason == null) {
-                    last.finish_reason = parsed.finish_reason || 'stop'
-                  }
-
-                  // Debug: log run.completed to check if reasoning is included
-                  logger.info('[chat-run-socket] run.completed keys: %s', Object.keys(parsed))
-                  // Finalize assistant message — if no content was streamed, use output
-                  if (parsed.output && !runProducedAssistantText(msgs, hermesSessionId)) {
-                    let outputContent = parsed.output
-
-                    // Parse output if it's a stringified array
-                    if (typeof outputContent === 'string' &&
-                      outputContent.trim().startsWith('[') &&
-                      outputContent.trim().endsWith(']')) {
-                      try {
-                        const parsedOutput = parseAnthropicContentArray(outputContent)
-                        const textParts = parsedOutput
-                          .filter((b: any) => b.type === 'text')
-                          .map((b: any) => b.text || '')
-                        outputContent = textParts.join('')
-                      } catch {
-                        // If parsing fails, use output as-is
-                      }
-                    }
-
-                    if (last?.role === 'assistant') {
-                      last.content = outputContent
-                    } else {
-                      msgs.push({
-                        id: msgs.length + 1,
-                        session_id,
-                        hermesSessionId,
-                        role: 'assistant',
-                        content: outputContent,
-                        timestamp: Math.floor(Date.now() / 1000),
-                      })
-                    }
-                  }
-
-                  // Always parse output if it's an array format (for parsed_content field)
-                  // Only extract text content (tool_calls and reasoning are already sent via other events)
-                  if (parsed.output && typeof parsed.output === 'string' &&
-                    parsed.output.trim().startsWith('[') && parsed.output.trim().endsWith(']')) {
-                    try {
-                      const parsedOutput = parseAnthropicContentArray(parsed.output)
-                      const textParts = parsedOutput
-                        .filter((b: any) => b.type === 'text')
-                        .map((b: any) => b.text || '')
-
-                      // Set parsed_content for frontend (only text content)
-                      parsed.parsed_content = textParts.join('') || ''
-                      logger.info('[chat-run-socket] parsed output from run.completed event')
-                    } catch (e) {
-                      logger.error(e, '[chat-run-socket] failed to parse output from run.completed')
-                    }
-                  }
-
-                  // Parse stringified array content for all assistant messages
-                  // Only extract text content (tool_calls and reasoning are already in message fields)
-                  let parsedCount = 0
-                  for (const msg of msgs) {
-                    if (msg.hermesSessionId === hermesSessionId &&
-                      msg.role === 'assistant' && typeof msg.content === 'string' &&
-                      msg.content.trim().startsWith('[') && msg.content.trim().endsWith(']')) {
-                      try {
-                        logger.info('[chat-run-socket] parsing array content for message %s, content preview: %s',
-                          msg.id, msg.content.slice(0, 100))
-                        const parsedContent = parseAnthropicContentArray(msg.content)
-                        const textBlocks = parsedContent
-                          .filter((b: any) => b.type === 'text')
-                          .map((b: any) => b.text || '')
-
-                        msg.content = textBlocks.join('') || ''
-                        parsedCount++
-                      } catch (e) {
-                        logger.error(e, '[chat-run-socket] failed to parse array content for message %s', msg.id)
-                      }
-                    }
-                  }
-
-                  logger.info('[chat-run-socket] EXIT run.completed case, parsed %d messages', parsedCount)
-
-                  // Attach the last assistant message's parsed content to fix stringified array format
-                  const lastAssistantMsg = msgs.filter((m: any) =>
-                    m.hermesSessionId === hermesSessionId && m.role === 'assistant'
-                  ).pop()
-                  if (lastAssistantMsg && parsedCount > 0) {
-                    parsed.parsed_content = lastAssistantMsg.content || ''
-                    parsed.parsed_tool_calls = lastAssistantMsg.tool_calls || null
-                    parsed.parsed_reasoning = lastAssistantMsg.reasoning || null
-                    logger.info('[chat-run-socket] attached parsed content to run.completed event for message %s', lastAssistantMsg.id)
-                  }
-
-                  break
-                }
+        if (session_id) {
+          const state = this.sessionMap.get(session_id)
+          if (state) {
+            const mapped = this.applyResponseStreamEvent(state, session_id, runMarker, upstreamEvent, parsed)
+            if (mapped) {
+              if (mapped.runId) {
+                responseId = mapped.runId
+                state.runId = responseId
               }
+              emit(mapped.event, mapped.payload)
             }
           }
+        }
 
-          if (parsed.event === 'run.completed' || parsed.event === 'run.failed') {
-            source.close()
-            if (session_id && this.sessionMap.get(session_id)?.isAborting) {
-              logger.info({
-                sessionId: session_id,
-                runId: parsed.run_id,
-                event: parsed.event,
-              }, '[chat-run-socket][abort] suppressing upstream terminal event during abort')
-              return
-            }
-            const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-            if (session_id) await this.markCompleted(socket, session_id, { event: parsed.event, run_id: parsed.run_id })
-            // Tag the event with queue_remaining so frontend knows more runs are pending
-            parsed.queue_remaining = queueLen
-            emit(parsed.event || 'message', parsed)
-            if (session_id && queueLen > 0) {
-              this.dequeueNextQueuedRun(socket, session_id)
-            }
+        if (upstreamEvent === 'response.completed' || upstreamEvent === 'response.failed') {
+          if (session_id && this.sessionMap.get(session_id)?.isAborting) {
+            logger.info({
+              sessionId: session_id,
+              runId: responseId,
+              event: upstreamEvent,
+            }, '[chat-run-socket][abort] suppressing upstream terminal event during abort')
             return
           }
-
-          // Usage will be calculated after syncFromHermes completes (in markCompleted)
-
-          emit(parsed.event || 'message', parsed)
-        } catch { /* not JSON, skip */ }
-      }
-
-      source.onerror = () => {
-        source.close()
-        if (session_id && this.sessionMap.get(session_id)?.isAborting) {
-          logger.info({ sessionId: session_id }, '[chat-run-socket][abort] event source closed during abort')
+          const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+          if (session_id) await this.markCompleted(socket, session_id, {
+            event: upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed',
+            run_id: responseId,
+          })
+          const finalOutput = parsed.response || parsed
+          const finalText = extractResponseText(finalOutput)
+          if (upstreamEvent === 'response.completed' && session_id) {
+            const usage = finalOutput.usage || {}
+            updateUsage(session_id, {
+              inputTokens: usage.input_tokens ?? usage.inputTokens ?? 0,
+              outputTokens: usage.output_tokens ?? usage.outputTokens ?? 0,
+              cacheReadTokens: usage.cache_read_tokens ?? usage.cacheReadTokens ?? 0,
+              cacheWriteTokens: usage.cache_write_tokens ?? usage.cacheWriteTokens ?? 0,
+              reasoningTokens: usage.reasoning_tokens ?? usage.reasoningTokens ?? 0,
+              model: finalOutput.model || '',
+              profile: this.sessionMap.get(session_id)?.profile,
+            })
+          }
+          const eventName = upstreamEvent === 'response.completed' ? 'run.completed' : 'run.failed'
+          emit(eventName, {
+            event: eventName,
+            run_id: responseId || finalOutput.id,
+            response_id: responseId || finalOutput.id,
+            output: finalText,
+            usage: finalOutput.usage,
+            error: finalOutput.error || parsed.error,
+            queue_remaining: queueLen,
+          })
+          if (session_id && queueLen > 0) {
+            this.dequeueNextQueuedRun(socket, session_id)
+          }
           return
         }
-        const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
-        if (session_id) {
-          void this.markCompleted(socket, session_id, { event: 'run.failed' }).then(() => {
-            emit('run.failed', { event: 'run.failed', error: 'EventSource connection lost', queue_remaining: queueLen })
-            if (queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
-          })
-        } else {
-          emit('run.failed', { event: 'run.failed', error: 'EventSource connection lost' })
-        }
       }
+      // Stream ended without terminal event
+      const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
+      if (session_id) await this.markCompleted(socket, session_id, { event: 'run.failed', run_id: responseId })
+      emit('run.failed', {
+        event: 'run.failed',
+        run_id: responseId,
+        response_id: responseId,
+        error: 'Response stream ended without a terminal event',
+        queue_remaining: queueLen,
+      })
+      if (session_id && queueLen > 0) this.dequeueNextQueuedRun(socket, session_id)
     } catch (err: any) {
       const queueLen = session_id ? this.sessionMap.get(session_id)?.queue?.length ?? 0 : 0
       if (session_id) {
@@ -1208,17 +1020,212 @@ export class ChatRunSocket {
     }
   }
 
+  // --- Responses API stream event processing ---
+
+  private applyResponseStreamEvent(
+    state: SessionState,
+    sessionId: string,
+    runMarker: string | undefined,
+    eventType: string,
+    parsed: any,
+  ): { event: string; payload: any; runId?: string } | null {
+    const run = this.getResponseRunState(state, runMarker)
+    const now = () => Math.floor(Date.now() / 1000)
+
+    if (eventType === 'response.created') {
+      const response = parsed.response || parsed
+      run.responseId = response.id || run.responseId
+      return {
+        event: 'run.started',
+        runId: run.responseId,
+        payload: {
+          event: 'run.started',
+          run_id: run.responseId,
+          response_id: run.responseId,
+          status: response.status || 'in_progress',
+          queue_length: state.queue.length || 0,
+        },
+      }
+    }
+
+    if (eventType === 'response.output_text.delta') {
+      const deltaText = parsed.delta || parsed.text || ''
+      if (!deltaText) return null
+
+      const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
+      if (last?.role === 'assistant' && last.finish_reason == null && !last.tool_calls?.length) {
+        last.content += deltaText
+      } else {
+        state.messages.push({
+          id: state.messages.length + 1,
+          session_id: sessionId,
+          runMarker,
+          role: 'assistant',
+          content: deltaText,
+          timestamp: now(),
+        })
+      }
+      return {
+        event: 'message.delta',
+        payload: {
+          event: 'message.delta',
+          run_id: run.responseId,
+          response_id: run.responseId,
+          delta: deltaText,
+        },
+      }
+    }
+
+    if (eventType === 'response.output_text.done') {
+      // Only mark last assistant message as complete; text accumulated via delta events
+      const last = [...state.messages].reverse().find(m => m.runMarker === runMarker)
+      if (last?.role === 'assistant' && last.finish_reason == null) {
+        last.finish_reason = 'stop'
+      }
+      return null
+    }
+
+    if (eventType === 'response.output_item.added') {
+      const item = parsed.item || parsed.output_item || parsed
+      if (item.type !== 'function_call') return null
+      const callId = item.call_id || item.id
+      if (!callId) return null
+      run.toolCalls.set(callId, responseFunctionCallToToolCall(item))
+      return null
+    }
+
+    if (eventType === 'response.output_item.done') {
+      const item = parsed.item || parsed.output_item || parsed
+      if (item.type === 'function_call') {
+        const callId = item.call_id || item.id
+        if (!callId) return null
+        const toolCall = responseFunctionCallToToolCall(item)
+        run.toolCalls.set(callId, toolCall)
+
+        const key = `assistant:${callId}`
+        if (!run.insertedKeys.has(key)) {
+          run.insertedKeys.add(key)
+          state.messages.push({
+            id: state.messages.length + 1,
+            session_id: sessionId,
+            runMarker,
+            role: 'assistant',
+            content: '',
+            tool_calls: [toolCall],
+            finish_reason: 'tool_calls',
+            timestamp: now(),
+          })
+        }
+        return {
+          event: 'tool.started',
+          payload: {
+            event: 'tool.started',
+            run_id: run.responseId,
+            response_id: run.responseId,
+            tool_call_id: callId,
+            tool: toolCall.function.name,
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            preview: summarizeToolArguments(toolCall.function.arguments),
+          },
+        }
+      }
+
+      if (item.type === 'function_call_output') {
+        const callId = item.call_id || item.id
+        if (!callId) return null
+        const key = `tool:${callId}`
+        const output = typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? '')
+        const toolName = run.toolCalls.get(callId)?.function?.name || null
+        if (!run.insertedKeys.has(key)) {
+          run.insertedKeys.add(key)
+          state.messages.push({
+            id: state.messages.length + 1,
+            session_id: sessionId,
+            runMarker,
+            role: 'tool',
+            content: output,
+            tool_call_id: callId,
+            tool_name: toolName,
+            timestamp: now(),
+          })
+        }
+        return {
+          event: 'tool.completed',
+          payload: {
+            event: 'tool.completed',
+            run_id: run.responseId,
+            response_id: run.responseId,
+            tool_call_id: callId,
+            tool: toolName,
+            name: toolName,
+            output,
+          },
+        }
+      }
+    }
+
+    if (eventType === 'response.completed') {
+      const response = parsed.response || parsed
+      run.responseId = response.id || run.responseId
+      const output = Array.isArray(response.output) ? response.output : []
+      for (const item of output) {
+        if (item.type === 'function_call') {
+          this.applyResponseStreamEvent(state, sessionId, runMarker, 'response.output_item.done', { item })
+        } else if (item.type === 'function_call_output') {
+          this.applyResponseStreamEvent(state, sessionId, runMarker, 'response.output_item.done', { item })
+        }
+      }
+    }
+
+    return null
+  }
+
+  private getResponseRunState(state: SessionState, runMarker?: string): ResponseRunState {
+    if (!state.responseRun || state.responseRun.runMarker !== runMarker) {
+      state.responseRun = {
+        runMarker,
+        insertedKeys: new Set<string>(),
+        toolCalls: new Map<string, any>(),
+      }
+    }
+    return state.responseRun
+  }
+
+  /** Flush all non-user messages for this run to DB in order. */
+  private flushResponseRunToDb(state: SessionState, sessionId: string) {
+    const run = state.responseRun
+    if (!run?.runMarker) return
+    let flushed = 0
+    for (const msg of state.messages) {
+      if (msg.runMarker !== run.runMarker) continue
+      if (msg.role === 'user') continue
+      addMessage({
+        session_id: sessionId,
+        role: msg.role,
+        content: msg.content || '',
+        tool_call_id: msg.tool_call_id ?? null,
+        tool_calls: msg.tool_calls ?? null,
+        tool_name: msg.tool_name ?? null,
+        finish_reason: msg.finish_reason ?? null,
+        timestamp: msg.timestamp,
+      })
+      flushed++
+    }
+    logger.info('[chat-run-socket] flushResponseRunToDb: flushed %d messages for session %s',
+      flushed, sessionId)
+  }
+
   // --- Abort handler ---
 
   private async handleAbort(socket: Socket, sessionId: string) {
     const state = this.sessionMap.get(sessionId)
-    if (!state?.isWorking || !state.runId) {
+    if (!state?.isWorking || (!state.runId && !state.abortController)) {
       logger.info({ sessionId }, '[chat-run-socket][abort] ignored: no active run')
       if (state) {
         state.isWorking = false
         state.isAborting = false
         state.abortController = undefined
-        state.eventSource = undefined
         state.runId = undefined
         state.events = []
       }
@@ -1244,42 +1251,14 @@ export class ChatRunSocket {
     })
     logger.info({ sessionId, runId }, '[chat-run-socket][abort] started')
 
-    // Call upstream stop endpoint
-    const profile = state.profile || 'default'
-    const upstream = this.gatewayManager.getUpstream(profile).replace(/\/$/, '')
-    const apiKey = this.gatewayManager.getApiKey(profile) || undefined
+    // Flush in-memory assistant text to DB before aborting the stream.
+    this.flushResponseRunToDb(state, sessionId)
 
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-
-      logger.info({ sessionId, runId, upstream }, '[chat-run-socket][abort] calling upstream stop')
-      await fetch(`${upstream}/v1/runs/${runId}/stop`, {
-        method: 'POST',
-        headers,
-        signal: AbortSignal.timeout(10_000),
-      })
-      logger.info('[chat-run-socket] called upstream stop for run %s (session: %s)', runId, sessionId)
-      logger.info({ sessionId, runId, graceMs: 5000 }, '[chat-run-socket][abort] upstream stop accepted, waiting for graceful exit')
-
-      // Wait for upstream to process the stop request
-      await new Promise(resolve => setTimeout(resolve, 5000))
-    } catch (err: any) {
-      logger.warn(err, '[chat-run-socket] failed to call upstream stop for run %s (session: %s)', runId, sessionId)
-      logger.warn({ sessionId, runId, error: err?.message }, '[chat-run-socket][abort] upstream stop failed, continuing local completion')
-    }
-
-    // Close local EventSource connection after the upstream grace period.
-    if (state.eventSource) {
-      state.eventSource.close()
-      state.eventSource = undefined
-      logger.info({ sessionId, runId }, '[chat-run-socket][abort] event source closed')
-    }
     if (state.abortController) {
       state.abortController.abort()
     }
 
-    await this.markAbortCompleted(socket, sessionId, runId)
+    await this.markAbortCompleted(socket, sessionId, runId || 'response_stream')
   }
 
   /** Mark a session run as completed/failed so reconnecting clients get notified */
@@ -1295,15 +1274,17 @@ export class ChatRunSocket {
       }
       state.isWorking = false
       state.abortController = undefined
-      state.eventSource = undefined
       state.runId = undefined
       state.events = []
-      // Sync messages from Hermes ephemeral session to local DB
+      this.flushResponseRunToDb(state, sessionId)
+      state.responseRun = undefined
+      state.profile = undefined
+      updateSessionStats(sessionId)
+      // Bridge: sync messages from Hermes ephemeral session to local DB (legacy path)
       if (useLocalSessionStore() && this.hermesSessionIds.get(sessionId)) {
         const hermesId = this.hermesSessionIds.get(sessionId)
         const prof = state.profile
         this.hermesSessionIds.delete(sessionId)
-        state.profile = undefined
         await this.syncFromHermes(socket, sessionId, hermesId, prof, {
           maxAttempts: 4,
           delayMs: 1000,
@@ -1337,9 +1318,10 @@ export class ChatRunSocket {
     const state = this.sessionMap.get(sessionId)
     if (!state) return
 
-    const hermesId = this.hermesSessionIds.get(sessionId)
     const profile = state.profile
     let synced = false
+    // Bridge: sync from Hermes ephemeral session (legacy path)
+    const hermesId = this.hermesSessionIds.get(sessionId)
     if (useLocalSessionStore() && hermesId) {
       this.hermesSessionIds.delete(sessionId)
       logger.info({ sessionId, hermesId, profile: profile || 'default' }, '[chat-run-socket][abort] syncing stopped run from Hermes')
@@ -1353,8 +1335,9 @@ export class ChatRunSocket {
     state.isAborting = false
     state.profile = undefined
     state.abortController = undefined
-    state.eventSource = undefined
     state.runId = undefined
+    state.responseRun = undefined
+    updateSessionStats(sessionId)
 
     // Process queued messages after abort completes
     if (state.queue.length > 0) {
@@ -1605,7 +1588,7 @@ export class ChatRunSocket {
     const msg = state?.messages || []
     // 找区间
     for (let i = 0; i < msg.length; i++) {
-      if (msg[i].hermesSessionId === hermesSessionId) {
+      if ((msg[i] as any).hermesSessionId === hermesSessionId) {
         if (start === -1) start = i
         end = i
       } else if (start !== -1) {
@@ -1676,7 +1659,7 @@ export class ChatRunSocket {
     }
   }
 
-  /** Close all active EventSource connections and abort controllers */
+  /** Close all active connections and abort controllers */
   close() {
     for (const [sessionId, state] of this.sessionMap.entries()) {
       if (state.abortController) {
@@ -1693,11 +1676,101 @@ export class ChatRunSocket {
   }
 }
 
-/** Check if the current ephemeral run has already produced assistant text. */
-function runProducedAssistantText(messages: SessionMessage[], hermesSessionId?: string): boolean {
-  return messages.some(m =>
-    m.hermesSessionId === hermesSessionId &&
-    m.role === 'assistant' &&
-    !!m.content?.trim()
-  )
+// --- Module-level helpers for Responses API SSE parsing ---
+
+async function* readSseFrames(stream: ReadableStream<Uint8Array>): AsyncGenerator<{ event?: string; data: string }> {
+  const decoder = new TextDecoder()
+  const reader = stream.getReader()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        const raw = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const frame = parseSseFrame(raw)
+        if (frame?.data) yield frame
+        boundary = buffer.indexOf('\n\n')
+      }
+    }
+
+    buffer += decoder.decode()
+    const frame = parseSseFrame(buffer)
+    if (frame?.data) yield frame
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function parseSseFrame(raw: string): { event?: string; data: string } | null {
+  let event: string | undefined
+  const data: string[] = []
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line || line.startsWith(':')) continue
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      data.push(line.slice(5).trimStart())
+    }
+  }
+  if (data.length === 0) return null
+  return { event, data: data.join('\n') }
+}
+
+function responseFunctionCallToToolCall(item: any): any {
+  const callId = item.call_id || item.id || ''
+  const name = item.name || item.function?.name || ''
+  let args = item.arguments ?? item.function?.arguments ?? '{}'
+  if (typeof args !== 'string') {
+    args = JSON.stringify(args ?? {})
+  }
+  return {
+    id: callId,
+    type: 'function',
+    function: {
+      name,
+      arguments: args || '{}',
+    },
+  }
+}
+
+function summarizeToolArguments(args: string): string | undefined {
+  if (!args) return undefined
+  try {
+    const parsed = JSON.parse(args)
+    if (!parsed || typeof parsed !== 'object') return args.slice(0, 120)
+    const preferredKeys = ['cmd', 'command', 'code', 'query', 'path', 'url', 'prompt']
+    for (const key of preferredKeys) {
+      const value = parsed[key]
+      if (typeof value === 'string' && value.trim()) {
+        return value.replace(/\s+/g, ' ').slice(0, 160)
+      }
+    }
+    const first = Object.entries(parsed).find(([, value]) => typeof value === 'string' && value.trim())
+    if (first) return String(first[1]).replace(/\s+/g, ' ').slice(0, 160)
+    return JSON.stringify(parsed).slice(0, 160)
+  } catch {
+    return args.replace(/\s+/g, ' ').slice(0, 160)
+  }
+}
+
+function extractResponseText(response: any): string {
+  const output = Array.isArray(response?.output) ? response.output : []
+  const parts: string[] = []
+  for (const item of output) {
+    if (item.type !== 'message') continue
+    const content = Array.isArray(item.content) ? item.content : []
+    for (const part of content) {
+      if (part.type === 'output_text' || part.type === 'text') {
+        parts.push(part.text || '')
+      }
+    }
+  }
+  if (parts.length > 0) return parts.join('')
+  return typeof response?.output_text === 'string' ? response.output_text : ''
 }
