@@ -309,6 +309,36 @@ describe('Chat Store', () => {
     expect(window.localStorage.getItem(inFlightKey('sess-poll-stale'))).toBeNull()
   })
 
+  it('does not treat a stale persisted in-flight record as active when the hydrated active session already ended', async () => {
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, 'sess-ended')
+    window.localStorage.setItem(
+      SESSIONS_CACHE_KEY,
+      JSON.stringify([
+        {
+          id: 'sess-ended',
+          title: 'Ended Session',
+          source: 'api_server',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2,
+          endedAt: 1710000001000,
+        },
+      ]),
+    )
+    window.localStorage.setItem(inFlightKey('sess-ended'), JSON.stringify({ runId: 'run-stale', startedAt: Date.now() }))
+    mockSessionsApi.fetchSessions.mockResolvedValue([])
+    mockSessionsApi.fetchSession.mockResolvedValue(null)
+
+    const store = useChatStore()
+    const loadPromise = store.loadSessions()
+    expect(store.activeSessionId).toBe('sess-ended')
+    expect(store.activeSession?.endedAt).toBe(1710000001000)
+    expect(store.isRunActive).toBe(false)
+
+    await loadPromise
+    expect(store.isRunActive).toBe(false)
+  })
+
   it('persists the user message immediately before any SSE delta arrives', async () => {
     const store = useChatStore()
 

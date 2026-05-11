@@ -311,10 +311,14 @@ export const useChatStore = defineStore('chat', () => {
   // localStorage after a refresh and are polling fetchSession for progress.
   // UI shows the thinking indicator while this is set.
   const resumingRuns = ref<Set<string>>(new Set())
-  const isRunActive = computed(() =>
-    isStreaming.value
-    || (activeSessionId.value != null && (isSessionLive(activeSessionId.value) || !!readInFlight(activeSessionId.value)))
-  )
+  const isRunActive = computed(() => {
+    if (isStreaming.value) return true
+    const sid = activeSessionId.value
+    if (sid == null) return false
+    if (isSessionLive(sid)) return true
+    if (activeSession.value?.endedAt != null) return false
+    return !!readInFlight(sid)
+  })
   const isAborting = computed(() => false)
   const pollTimers = new Map<string, ReturnType<typeof setInterval>>()
   const pollSignatures = new Map<string, { sig: string, stableTicks: number }>()

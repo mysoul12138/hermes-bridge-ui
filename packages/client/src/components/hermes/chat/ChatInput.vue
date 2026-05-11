@@ -637,7 +637,7 @@ function isImage(type: string): boolean {
 
 .input-wrapper {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   background: rgba(255, 255, 255, 0.9);
@@ -669,6 +669,7 @@ function isImage(type: string): boolean {
 .input-textarea {
   width: 100%;
   min-width: 0;
+  display: block;
   background: none;
   border: none;
   outline: none;
