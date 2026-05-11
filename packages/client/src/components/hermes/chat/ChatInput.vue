@@ -9,7 +9,7 @@ import { useSettingsStore } from '@/stores/hermes/settings'
 import { fetchContextLength } from '@/api/hermes/sessions'
 import { setModelContext } from '@/api/hermes/model-context'
 import { NButton, NTooltip, NSwitch, NModal, NInputNumber, useMessage } from 'naive-ui'
-import { computed, ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const chatStore = useChatStore()
@@ -245,9 +245,17 @@ function handleKeydown(e: KeyboardEvent) {
 
 function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
-  el.style.height = 'auto'
+  el.style.height = '0px'
   el.style.height = Math.min(el.scrollHeight, 100) + 'px'
 }
+
+watch(inputText, async () => {
+  await nextTick()
+  const el = textareaRef.value
+  if (!el) return
+  el.style.height = '0px'
+  el.style.height = Math.min(el.scrollHeight, 100) + 'px'
+})
 
 function removeAttachment(id: string) {
   const idx = attachments.value.findIndex(a => a.id === id)
@@ -671,6 +679,8 @@ function isImage(type: string): boolean {
   width: 100%;
   min-width: 0;
   display: block;
+  box-sizing: border-box;
+  padding: 0;
   background: none;
   border: none;
   outline: none;
@@ -681,7 +691,7 @@ function isImage(type: string): boolean {
   resize: none;
   max-height: 100px;
   min-height: 20px;
-  overflow-y: auto;
+  overflow-y: hidden;
 
   &::placeholder {
     color: $text-muted;

@@ -597,6 +597,13 @@ function isBranchRoot(session: ConversationSessionRow | undefined, byId: Map<str
 
 function isVisibleConversationStart(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>): boolean {
   if (!session || session.source === 'tool') return false
+  if (
+    session.source === 'tui'
+    && session.parent_session_id == null
+    && isBridgeContextPrompt(session.raw_preview || session.preview || session.title)
+  ) {
+    return false
+  }
   if (isLatestCompressionContinuation(session, byId, childrenByParent)) return true
   if (isLatestBridgeContextContinuation(session, byId, childrenByParent)) return true
   if (nextContinuationChild(session, byId, childrenByParent)) return false
