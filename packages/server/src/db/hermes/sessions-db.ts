@@ -386,7 +386,9 @@ function isLikelyOrphanContinuation(parent: HermesSessionInternalRow, child: Her
   if (delta <= LINEAGE_TOLERANCE_SECONDS) return true
   if (delta > DUPLICATE_CONTINUATION_WINDOW_SECONDS) return false
 
-  if (parent.source === 'tui' && isBridgeContextPrompt(child.preview || child.title)) return true
+  if (parent.source === 'tui') {
+    return isBridgeContextPrompt(child.preview || child.title)
+  }
 
   const parentPreview = normalizeText(parent.preview)
   const childPreview = normalizeText(child.preview)

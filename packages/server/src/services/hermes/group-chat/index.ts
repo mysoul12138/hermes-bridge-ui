@@ -166,6 +166,19 @@ class ChatStorage {
         this.db()?.prepare('DELETE FROM gc_pending_session_deletes WHERE session_id = ?').run(sessionId)
     }
 
+    markSessionDeleted(sessionId: string, profileName: string): void {
+        const now = Date.now()
+        this.db()?.prepare(
+            `INSERT INTO gc_pending_session_deletes (session_id, profile_name, status, attempt_count, last_error, created_at, updated_at, next_attempt_at)
+             VALUES (?, ?, 'processing', 0, NULL, ?, ?, ?)
+             ON CONFLICT(session_id) DO UPDATE SET
+               profile_name = excluded.profile_name,
+               status = 'processing',
+               updated_at = excluded.updated_at,
+               next_attempt_at = excluded.next_attempt_at`
+        ).run(sessionId, profileName, now, now, now + 7 * 24 * 60 * 60 * 1000)
+    }
+
     getPendingDeletedSessionIds(): Set<string> {
         const rows = (this.db()?.prepare(
             `SELECT session_id FROM gc_pending_session_deletes WHERE status IN ('pending', 'processing')`

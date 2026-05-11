@@ -107,7 +107,7 @@ describe('session conversations controller', () => {
   })
 
   it('prefers the DB-backed conversations summary path', async () => {
-    listConversationSummariesFromDbMock.mockResolvedValue([{ id: 'db-conversation' }])
+    listConversationSummariesFromDbMock.mockResolvedValue([{ id: 'db-conversation', represented_session_ids: ['db-conversation', 'history-1'] }])
 
     const mod = await import('../../packages/server/src/controllers/hermes/sessions')
     const ctx: any = { query: { humanOnly: 'true', limit: '5' }, body: null }
@@ -115,7 +115,7 @@ describe('session conversations controller', () => {
 
     expect(listConversationSummariesFromDbMock).toHaveBeenCalledWith({ source: undefined, humanOnly: true, limit: 5 })
     expect(listConversationSummariesMock).not.toHaveBeenCalled()
-    expect(ctx.body).toEqual({ sessions: [{ id: 'db-conversation' }] })
+    expect(ctx.body).toEqual({ sessions: [{ id: 'db-conversation', represented_session_ids: ['db-conversation', 'history-1'] }] })
   })
 
   it('falls back to the CLI-export conversations summary path when the DB query fails', async () => {

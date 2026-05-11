@@ -191,6 +191,12 @@ export function mapHermesMessages(msgs: HermesMessage[]): Message[] {
 }
 
 export function mapHermesSession(s: SessionSummary | ConversationSummary): Session {
+  const rawRepresentedSessionIds: unknown[] = Array.isArray((s as any).represented_session_ids)
+    ? (s as any).represented_session_ids
+    : []
+  const representedSessionIds = rawRepresentedSessionIds.length > 0
+    ? rawRepresentedSessionIds.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+    : [s.id]
   return {
     id: s.id,
     title: s.title || s.preview || s.id,
@@ -208,6 +214,7 @@ export function mapHermesSession(s: SessionSummary | ConversationSummary): Sessi
     lastActiveAt: s.last_active != null ? Math.round(s.last_active * 1000) : undefined,
     workspace: (s as any).workspace || null,
     branchSessionCount: 'branch_session_count' in s ? s.branch_session_count : 0,
+    representedSessionIds: [...new Set(representedSessionIds)],
   }
 }
 

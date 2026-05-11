@@ -83,6 +83,7 @@ describe('conversations service', () => {
         ended_at: 111,
         cost_status: 'mixed',
         actual_cost_usd: 0.30000000000000004,
+        represented_session_ids: ['root', 'root-cont'],
       }),
     )
 
@@ -94,6 +95,64 @@ describe('conversations service', () => {
       'Continue with more detail',
       'Continued answer',
     ])
+  })
+
+  it('does not fold unrelated tui sessions together just because titles match after the compression window', async () => {
+    exportSessionsRawMock.mockResolvedValue([
+      {
+        id: 'tui-root',
+        parent_session_id: null,
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Same title',
+        started_at: 100,
+        ended_at: 110,
+        end_reason: 'compression',
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 2,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openai',
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        messages: [
+          { id: 1, session_id: 'tui-root', role: 'user', content: 'first session', timestamp: 101 },
+        ],
+      },
+      {
+        id: 'tui-unrelated',
+        parent_session_id: null,
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Same title',
+        started_at: 400,
+        ended_at: 401,
+        end_reason: null,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 3,
+        output_tokens: 4,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openai',
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        messages: [
+          { id: 2, session_id: 'tui-unrelated', role: 'user', content: 'second session', timestamp: 401 },
+        ],
+      },
+    ])
+
+    const mod = await import('../../packages/server/src/services/hermes/conversations')
+    const summaries = await mod.listConversationSummaries({ humanOnly: true })
+
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['tui-unrelated', 'tui-root'])
   })
 
   it('aggregates an orphan continuation that starts immediately after compression', async () => {

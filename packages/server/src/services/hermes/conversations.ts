@@ -62,6 +62,7 @@ export interface ConversationSummary {
   is_active: boolean
   thread_session_count: number
   branch_session_count: number
+  represented_session_ids?: string[]
 }
 
 export interface ConversationMessage {
@@ -292,7 +293,9 @@ function isLikelyOrphanContinuation(parent: ConversationSession, child: Conversa
   if (delta <= LINEAGE_TOLERANCE_SECONDS) return true
   if (delta > DUPLICATE_CONTINUATION_WINDOW_SECONDS) return false
 
-  if (parent.source === 'tui' && isBridgeContextPrompt(child.raw_preview || child.preview || child.title)) return true
+  if (parent.source === 'tui') {
+    return isBridgeContextPrompt(child.raw_preview || child.preview || child.title)
+  }
 
   const parentPreview = normalizeText(parent.preview)
   const childPreview = normalizeText(child.preview)
@@ -386,6 +389,10 @@ function collectConversationChain(rootId: string, byId: Map<string, Conversation
     current = nextContinuationChild(current, byId, childrenByParent, allowTool)
   }
   return chain
+}
+
+function representedSessionIds(chain: ConversationSession[]): string[] {
+  return [...new Set(chain.map(session => safeText(session.id)).filter(Boolean))]
 }
 
 function sessionMessages(session: HermesSessionFull): HermesMessageLike[] {
@@ -519,6 +526,7 @@ function toSummary(session: ConversationSession): ConversationSummary {
     is_active: session.is_active,
     thread_session_count: 1,
     branch_session_count: 0,
+    represented_session_ids: [session.id],
   }
 }
 
@@ -557,6 +565,7 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSession>
       if (actual == null) return sum
       return (sum || 0) + Number(actual)
     }, null),
+    represented_session_ids: representedSessionIds(chain),
   }
 }
 

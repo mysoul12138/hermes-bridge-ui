@@ -257,6 +257,34 @@ describe('session DB compression lineage', () => {
     expect(detail?.messages.map(message => message.session_id)).toEqual(['root', 'duplicate-cont'])
   })
 
+  it('does not merge unrelated tui sessions that only share the same title', async () => {
+    insertSession(db!, {
+      id: 'tui-root',
+      source: 'tui',
+      title: 'Same title',
+      started_at: 100,
+      ended_at: 110,
+      end_reason: 'compression',
+      message_count: 1,
+    })
+    insertSession(db!, {
+      id: 'tui-unrelated',
+      source: 'tui',
+      title: 'Same title',
+      started_at: 400,
+      ended_at: null,
+      end_reason: null,
+      message_count: 1,
+    })
+    insertMessage(db!, { id: 51, session_id: 'tui-root', content: 'first session', timestamp: 101 })
+    insertMessage(db!, { id: 52, session_id: 'tui-unrelated', content: 'second session', timestamp: 401 })
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const rows = await mod.listSessionSummaries(undefined, 20)
+
+    expect(rows.map((row: any) => row.id)).toEqual(['tui-unrelated', 'tui-root'])
+  })
+
   it('hides bridge context prompt duplicates under the compressed TUI chain', async () => {
     insertSession(db!, {
       id: 'root',

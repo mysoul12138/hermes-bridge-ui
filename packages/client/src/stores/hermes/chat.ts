@@ -149,6 +149,7 @@ export interface Session {
   parentSessionId?: string | null
   rootSessionId?: string | null
   isBranchSession?: boolean
+  representedSessionIds?: string[]
 }
 
 export interface CompressionState {
@@ -197,6 +198,12 @@ function applySessionDetail(session: Session | undefined | null, detail: Partial
   if (detail.last_active != null) session.lastActiveAt = Math.round(detail.last_active * 1000)
   applySessionUsage(session, detail as { input_tokens: number; output_tokens: number }, { allowReset: true })
   applySessionModelOverride(session)
+}
+
+function representedSessionIdsOf(summary: SessionSummary | ConversationSummary): string[] {
+  const raw = 'represented_session_ids' in summary ? (summary.represented_session_ids || []) : []
+  const ids = Array.isArray(raw) ? raw.filter((value): value is string => typeof value === 'string' && value.trim().length > 0) : []
+  return ids.length > 0 ? [...new Set(ids)] : [summary.id]
 }
 
 
@@ -520,7 +527,7 @@ export const useChatStore = defineStore('chat', () => {
             existingMeta.set(String(m.id), { reasoning: m.reasoning, isStreaming: m.isStreaming })
           }
         }
-        if (existingMeta.size > 0) {
+      if (existingMeta.size > 0) {
           mergedMessages = mergedMessages.map(m => {
             const meta = existingMeta.get(String(m.id))
             if (!meta) return m
@@ -531,6 +538,21 @@ export const useChatStore = defineStore('chat', () => {
             return changed ? { ...m, ...patch } : m
           })
         }
+      }
+      if (existing.messages.length === mergedMessages.length) {
+        mergedMessages = mergedMessages.map((message, index) => {
+          const current = existing.messages[index]
+          if (!current || current.role !== 'assistant' || message.role !== 'assistant') return message
+          if ((current.content || '').length > (message.content || '').length) {
+            return {
+              ...message,
+              content: current.content,
+              reasoning: message.reasoning || current.reasoning,
+              isStreaming: message.isStreaming || current.isStreaming,
+            }
+          }
+          return message
+        })
       }
       if (!messagesEquivalent(existing.messages, mergedMessages)) {
         existing.messages = mergedMessages
@@ -689,6 +711,21 @@ export const useChatStore = defineStore('chat', () => {
               return changed ? { ...m, ...patch } : m
             })
           }
+        }
+        if (existing.messages.length === nextMessages.length) {
+          nextMessages = nextMessages.map((message, index) => {
+            const current = existing.messages[index]
+            if (!current || current.role !== 'assistant' || message.role !== 'assistant') return message
+            if ((current.content || '').length > (message.content || '').length) {
+              return {
+                ...message,
+                content: current.content,
+                reasoning: message.reasoning || current.reasoning,
+                isStreaming: message.isStreaming || current.isStreaming,
+              }
+            }
+            return message
+          })
         }
         existing.title = nextSession.title
         existing.source = nextSession.source
@@ -1390,7 +1427,21 @@ export const useChatStore = defineStore('chat', () => {
       } catch {
         list = await fetchSessions()
       }
-      const freshRaw = list.map(mapHermesSession)
+      let tuiRaw: SessionSummary[] = []
+      try {
+        tuiRaw = await fetchSessions('tui')
+      } catch {
+        tuiRaw = []
+      }
+
+      const representedIds = new Set<string>()
+      for (const item of list) {
+        for (const id of representedSessionIdsOf(item)) representedIds.add(id)
+      }
+
+      const supplementalTui = tuiRaw.filter(item => !representedIds.has(item.id))
+      const mergedList = [...list, ...supplementalTui]
+      const freshRaw = mergedList.map(mapHermesSession)
       freshRaw.forEach(applySessionModelOverride)
       const freshRawIds = new Set(freshRaw.map(s => s.id))
       const branchMetaIndex = loadBranchSessionMetaIndex()
@@ -1417,8 +1468,16 @@ export const useChatStore = defineStore('chat', () => {
         const localBridge = bridgeLocalByPersistent.get(s.id)
         return !(localBridge && isLocalRunActive(localBridge.id))
       })
-      const freshIds = new Set(fresh.map(s => s.id))
-      for (const s of fresh) {
+      const logicalSeen = new Set<string>()
+      const dedupedFresh = fresh.filter(session => {
+        const represented = session.representedSessionIds?.length ? session.representedSessionIds : [session.id]
+        const duplicate = represented.some(id => logicalSeen.has(id))
+        if (duplicate) return false
+        represented.forEach(id => logicalSeen.add(id))
+        return true
+      })
+      const freshIds = new Set(dedupedFresh.map(s => s.id))
+      for (const s of dedupedFresh) {
         const prev = msgsByIdBefore.get(s.id)
         const localBridge = bridgeLocalByPersistent.get(s.id)
         const localBridgeMessages = localBridge ? msgsByIdBefore.get(localBridge.id) || localBridge.messages : null
@@ -1477,14 +1536,18 @@ export const useChatStore = defineStore('chat', () => {
         clearBridgeLocalSession(s.id)
         return false
       })
-      sessions.value = [...localOnly, ...fresh]
+      sessions.value = [...localOnly, ...dedupedFresh]
       persistSessionsList()
 
-      // Restore last active session, fallback to most recent
+      // Restore last active session, fallback to the session that represents
+      // the previously active real session, then the most recent session.
       const savedId = activeSessionId.value
+      const representedTarget = savedId
+        ? sessions.value.find(session => (session.representedSessionIds || [session.id]).includes(savedId))
+        : null
       const targetId = savedId && sessions.value.some(s => s.id === savedId)
         ? savedId
-        : sessions.value[0]?.id
+        : representedTarget?.id || sessions.value[0]?.id
       if (targetId) {
         await switchSession(targetId)
       }
@@ -2035,17 +2098,23 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function deleteSession(sessionId: string) {
-    await deleteSessionApi(sessionId)
+    const target = sessions.value.find(session => session.id === sessionId)
+    const removedIds = [...new Set([sessionId, ...(target?.representedSessionIds || [])])]
+    const ok = await deleteSessionApi(sessionId)
+    if (!ok) return false
+
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
-    removeItemWithLegacy(msgsCacheKey(sessionId), legacyMsgsCacheKey(sessionId))
-    clearSessionModelOverride(sessionId)
-    clearInFlight(sessionId)
-    clearBridgeLocalSession(sessionId)
-    stopPolling(sessionId)
-    stopApprovalPolling(sessionId)
-    stopClarifyPolling(sessionId)
-    clearApproval(sessionId)
-    clearClarify(sessionId)
+    for (const removedId of removedIds) {
+      removeItemWithLegacy(msgsCacheKey(removedId), legacyMsgsCacheKey(removedId))
+      clearSessionModelOverride(removedId)
+      clearInFlight(removedId)
+      clearBridgeLocalSession(removedId)
+      stopPolling(removedId)
+      stopApprovalPolling(removedId)
+      stopClarifyPolling(removedId)
+      clearApproval(removedId)
+      clearClarify(removedId)
+    }
     persistSessionsList()
     if (activeSessionId.value === sessionId) {
       if (sessions.value.length > 0) {
@@ -2055,6 +2124,7 @@ export const useChatStore = defineStore('chat', () => {
         switchSession(session.id)
       }
     }
+    return true
   }
 
   function getSessionMsgs(sessionId: string): Message[] {

@@ -720,6 +720,118 @@ describe('Chat Store', () => {
     expect(window.localStorage.getItem(bridgeLocalSessionKey(staleId))).toBeNull()
   })
 
+  it('deduplicates continuation split sessions when conversation summaries expose represented session ids', async () => {
+    const logicalId = '20260502_135857_2f594e'
+    const historyId = '20260502_120953_713358'
+
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      {
+        ...makeSummary(logicalId, 'Continuation'),
+        source: 'tui',
+        branch_session_count: 1,
+        represented_session_ids: [logicalId, historyId],
+      },
+    ])
+    mockSessionsApi.fetchSessions.mockResolvedValue([
+      { ...makeSummary(logicalId, 'Continuation'), source: 'tui' },
+      { ...makeSummary(historyId, 'History'), source: 'tui' },
+    ])
+    mockConversationsApi.fetchConversationDetail.mockResolvedValue({
+      session_id: logicalId,
+      messages: [],
+      visible_count: 0,
+      thread_session_count: 1,
+      branch_session_count: 0,
+      branches: [],
+    })
+    mockSessionsApi.fetchSession.mockResolvedValue(makeDetail(logicalId, []))
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.sessions.map(session => session.id)).toEqual([logicalId])
+    expect(store.sessions[0].representedSessionIds).toEqual([logicalId, historyId])
+  })
+
+  it('supplements missing tui sessions from the raw session list when conversation summaries omit them', async () => {
+    const visibleId = 'visible-tui'
+    const missingId = 'missing-tui'
+
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      { ...makeSummary(visibleId, 'Visible'), source: 'tui', branch_session_count: 0 },
+    ])
+    mockSessionsApi.fetchSessions.mockImplementation(async (source?: string) => {
+      if (source === 'tui') {
+        return [
+          { ...makeSummary(visibleId, 'Visible'), source: 'tui' },
+          { ...makeSummary(missingId, 'Missing but real'), source: 'tui' },
+        ]
+      }
+      return []
+    })
+    mockConversationsApi.fetchConversationDetail.mockResolvedValue({
+      session_id: visibleId,
+      messages: [],
+      visible_count: 0,
+      thread_session_count: 1,
+      branch_session_count: 0,
+      branches: [],
+    })
+    mockSessionsApi.fetchSession.mockImplementation(async (id: string) => makeDetail(id, []))
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.sessions.map(session => session.id)).toEqual([missingId, visibleId])
+  })
+
+  it('does not remove a session locally when single delete fails on the server', async () => {
+    mockSessionsApi.deleteSession.mockResolvedValue(false)
+
+    const store = useChatStore()
+    store.sessions = [{
+      id: 'delete-me',
+      title: 'Delete me',
+      source: 'tui',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+    }]
+    store.activeSessionId = 'delete-me'
+    store.activeSession = store.sessions[0]
+
+    const ok = await store.deleteSession('delete-me')
+
+    expect(ok).toBe(false)
+    expect(store.sessions.map(session => session.id)).toEqual(['delete-me'])
+  })
+
+  it('clears caches for all represented session ids when deleting a logical session', async () => {
+    const logicalId = 'logical-tui'
+    const historyId = 'history-tui'
+    window.localStorage.setItem(sessionMessagesKey(logicalId), JSON.stringify([{ id: '1' }]))
+    window.localStorage.setItem(sessionMessagesKey(historyId), JSON.stringify([{ id: '2' }]))
+
+    const store = useChatStore()
+    store.sessions = [{
+      id: logicalId,
+      title: 'Logical',
+      source: 'tui',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 1,
+      representedSessionIds: [logicalId, historyId],
+    }]
+    store.activeSessionId = logicalId
+    store.activeSession = store.sessions[0]
+
+    const ok = await store.deleteSession(logicalId)
+
+    expect(ok).toBe(true)
+    expect(window.localStorage.getItem(sessionMessagesKey(logicalId))).toBeNull()
+    expect(window.localStorage.getItem(sessionMessagesKey(historyId))).toBeNull()
+  })
+
   it('backfills live tool details from session polling without replacing streamed text', async () => {
     vi.useFakeTimers()
 

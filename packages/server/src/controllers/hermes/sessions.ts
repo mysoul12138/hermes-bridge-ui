@@ -376,6 +376,7 @@ export async function remove(ctx: any) {
     ctx.body = { error: 'Failed to delete session' }
     return
   }
+  storage?.markSessionDeleted(sessionId, mapped?.profile_name || currentProfile)
   if (mapped) storage?.deleteSessionProfile(sessionId)
   deleteUsage(sessionId)
   ctx.body = { ok: true }
@@ -401,6 +402,8 @@ export async function batchRemove(ctx: any) {
     failed: 0,
     errors: [] as Array<{ id: string; error: string }>
   }
+  const storage = getGroupChatStorage()
+  const currentProfile = getActiveProfileName()
 
   if (useLocalSessionStore()) {
     for (const id of validIds) {
@@ -417,6 +420,8 @@ export async function batchRemove(ctx: any) {
     for (const id of validIds) {
       const ok = await hermesCli.deleteSession(id)
       if (ok) {
+        storage?.markSessionDeleted(id, (storage?.getSessionProfile(id)?.profile_name) || currentProfile)
+        storage?.deleteSessionProfile(id)
         deleteUsage(id)
         results.deleted++
       } else {

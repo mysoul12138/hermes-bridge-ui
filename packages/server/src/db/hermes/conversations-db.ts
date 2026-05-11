@@ -618,6 +618,10 @@ function collectConversationChain(rootId: string, byId: Map<string, Conversation
   return chain
 }
 
+function representedSessionIds(chain: ConversationSessionRow[]): string[] {
+  return [...new Set(chain.map(session => safeText(session.id)).filter(Boolean))]
+}
+
 function bridgeContextHistoryChain(chain: ConversationSessionRow[]): ConversationSessionRow[] {
   if (chain.length < 2) return []
   const visibleRoot = chain[chain.length - 1]
@@ -652,6 +656,7 @@ function toSummary(session: ConversationSessionRow): ConversationSummary {
     is_active: session.is_active,
     thread_session_count: 1,
     branch_session_count: 0,
+    represented_session_ids: [session.id],
   }
 }
 
@@ -695,6 +700,7 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionR
       if (actual == null) return sum
       return (sum || 0) + Number(actual)
     }, null),
+    represented_session_ids: representedSessionIds(chain),
   }
 }
 

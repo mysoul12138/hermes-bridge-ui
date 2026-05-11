@@ -24,6 +24,7 @@ export interface ConversationSummary {
   is_active: boolean
   thread_session_count: number
   branch_session_count: number
+  represented_session_ids?: string[]
 }
 
 export interface ConversationMessage {
