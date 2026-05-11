@@ -783,16 +783,8 @@ function collectConversationBranches(db: { prepare: (sql: string) => { all: (...
   const promotedCompressionBranches = includeCompressionHistory
     ? buildCompressionContinuationAlternativeBranches(db, chain[0], byId, childrenByParent, seen)
     : []
-  const historyBranch = includeCompressionHistory
-    ? buildCompressionHistoryBranch(db, chain[0], byId, childrenByParent, seen)
-    : null
-  const bridgeHistoryBranch = includeCompressionHistory
-    ? buildBridgeContextHistoryBranch(db, chain[0], byId, childrenByParent, seen)
-    : null
   const roots = collectBranchRoots(chain, byId, childrenByParent)
   const branches: ConversationBranch[] = []
-  if (historyBranch) branches.push(historyBranch)
-  if (bridgeHistoryBranch) branches.push(bridgeHistoryBranch)
   branches.push(...promotedCompressionBranches)
   for (const root of roots) {
     if (seen.has(root.id)) continue

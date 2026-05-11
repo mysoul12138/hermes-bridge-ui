@@ -638,7 +638,8 @@ function isImage(type: string): boolean {
 .input-wrapper {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: end;
+  justify-items: stretch;
   gap: 10px;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -694,7 +695,11 @@ function isImage(type: string): boolean {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
-  align-items: center;
+  align-items: flex-end;
+  align-self: end;
+  justify-self: end;
+  min-height: 32px;
+  white-space: nowrap;
 }
 
 // Drag-over state

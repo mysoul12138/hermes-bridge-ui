@@ -1427,7 +1427,7 @@ export const useChatStore = defineStore('chat', () => {
 
       let list: Array<SessionSummary | ConversationSummary>
       try {
-        list = await fetchConversationSummaries({ humanOnly: true })
+        list = await fetchConversationSummaries({ humanOnly: false })
       } catch {
         list = await fetchSessions()
       }
@@ -1480,8 +1480,19 @@ export const useChatStore = defineStore('chat', () => {
         represented.forEach(id => logicalSeen.add(id))
         return true
       })
-      const freshIds = new Set(dedupedFresh.map(s => s.id))
-      for (const s of dedupedFresh) {
+      const representedByOther = new Set<string>()
+      for (const session of dedupedFresh) {
+        for (const id of session.representedSessionIds || []) {
+          if (id !== session.id) representedByOther.add(id)
+        }
+      }
+      const visibleFresh = dedupedFresh.filter(session => {
+        if (session.isBranchSession) return true
+        if (session.source !== 'tui') return true
+        return !representedByOther.has(session.id)
+      })
+      const freshIds = new Set(visibleFresh.map(s => s.id))
+      for (const s of visibleFresh) {
         const prev = msgsByIdBefore.get(s.id)
         const localBridge = bridgeLocalByPersistent.get(s.id)
         const localBridgeMessages = localBridge ? msgsByIdBefore.get(localBridge.id) || localBridge.messages : null
@@ -1540,7 +1551,7 @@ export const useChatStore = defineStore('chat', () => {
         clearBridgeLocalSession(s.id)
         return false
       })
-      sessions.value = [...localOnly, ...dedupedFresh]
+      sessions.value = [...localOnly, ...visibleFresh]
       persistSessionsList()
 
       // Restore last active session, fallback to the session that represents
