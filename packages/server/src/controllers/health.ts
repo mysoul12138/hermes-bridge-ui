@@ -48,18 +48,10 @@ const LOCAL_VERSION = typeof __APP_VERSION__ !== 'undefined'
 let cachedLatestVersion = ''
 
 export async function checkLatestVersion(): Promise<void> {
-  try {
-    const packageName = PACKAGE_INFO?.name || 'hermes-web-ui'
-    const registryName = encodeURIComponent(packageName)
-    const res = await fetch(`https://registry.npmjs.org/${registryName}/latest`, { signal: AbortSignal.timeout(10000) })
-    if (res.ok) {
-      const data = await res.json() as { version: string }
-      cachedLatestVersion = data.version
-      if (LOCAL_VERSION && cachedLatestVersion !== LOCAL_VERSION) {
-        console.log(`Update available: ${LOCAL_VERSION} → ${cachedLatestVersion}`)
-      }
-    }
-  } catch { /* ignore */ }
+  // Disabled on this fork. The deployment flow is managed by the
+  // independent fork workflow (fork repo -> bridge-ui -> build -> replace),
+  // not by upstream npm release checks.
+  cachedLatestVersion = ''
 }
 
 export function startVersionCheck(): void {
@@ -84,7 +76,7 @@ export async function healthCheck(ctx: any) {
     gateway: gatewayOk ? 'running' : 'stopped',
     webui_version: LOCAL_VERSION,
     webui_latest: cachedLatestVersion,
-    webui_update_available: Boolean(LOCAL_VERSION && cachedLatestVersion && cachedLatestVersion !== LOCAL_VERSION),
+    webui_update_available: false,
     node_version: process.versions.node,
   }
 }
