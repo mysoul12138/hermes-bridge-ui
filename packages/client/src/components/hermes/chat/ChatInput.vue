@@ -636,7 +636,8 @@ function isImage(type: string): boolean {
 }
 
 .input-wrapper {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 10px;
   background: rgba(255, 255, 255, 0.9);
