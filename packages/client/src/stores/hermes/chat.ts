@@ -206,6 +206,10 @@ function representedSessionIdsOf(summary: SessionSummary | ConversationSummary):
   return ids.length > 0 ? [...new Set(ids)] : [summary.id]
 }
 
+function logSessionLoad(stage: string, detail: Record<string, unknown>) {
+  console.info(`[chat.loadSessions] ${stage}`, detail)
+}
+
 
 
 
@@ -1427,7 +1431,7 @@ export const useChatStore = defineStore('chat', () => {
 
       let list: Array<SessionSummary | ConversationSummary>
       try {
-        list = await fetchConversationSummaries({ humanOnly: false })
+        list = await fetchConversationSummaries({ humanOnly: true })
       } catch {
         list = await fetchSessions()
       }
@@ -1437,6 +1441,12 @@ export const useChatStore = defineStore('chat', () => {
       } catch {
         tuiRaw = []
       }
+      logSessionLoad('fetched', {
+        summaryCount: list.length,
+        tuiCount: tuiRaw.length,
+        summaryIds: list.slice(0, 20).map(item => item.id),
+        tuiIds: tuiRaw.slice(0, 20).map(item => item.id),
+      })
 
       const representedIds = new Set<string>()
       for (const item of list) {
@@ -1445,6 +1455,10 @@ export const useChatStore = defineStore('chat', () => {
 
       const supplementalTui = tuiRaw.filter(item => !representedIds.has(item.id))
       const mergedList = [...list, ...supplementalTui]
+      logSessionLoad('supplemental-tui', {
+        representedIds: Array.from(representedIds).slice(0, 50),
+        supplementalTuiIds: supplementalTui.map(item => item.id),
+      })
       const freshRaw = mergedList.map(mapHermesSession)
       freshRaw.forEach(applySessionModelOverride)
       const freshRawIds = new Set(freshRaw.map(s => s.id))
@@ -1480,6 +1494,10 @@ export const useChatStore = defineStore('chat', () => {
         represented.forEach(id => logicalSeen.add(id))
         return true
       })
+      logSessionLoad('dedupe', {
+        freshIds: fresh.map(session => session.id),
+        dedupedFreshIds: dedupedFresh.map(session => session.id),
+      })
       const representedByOther = new Set<string>()
       for (const session of dedupedFresh) {
         for (const id of session.representedSessionIds || []) {
@@ -1490,6 +1508,10 @@ export const useChatStore = defineStore('chat', () => {
         if (session.isBranchSession) return true
         if (session.source !== 'tui') return true
         return !representedByOther.has(session.id)
+      })
+      logSessionLoad('visible', {
+        representedByOther: Array.from(representedByOther),
+        visibleFreshIds: visibleFresh.map(session => session.id),
       })
       const freshIds = new Set(visibleFresh.map(s => s.id))
       for (const s of visibleFresh) {
@@ -1551,6 +1573,9 @@ export const useChatStore = defineStore('chat', () => {
         clearBridgeLocalSession(s.id)
         return false
       })
+      logSessionLoad('local-only', {
+        localOnlyIds: localOnly.map(session => session.id),
+      })
       sessions.value = [...localOnly, ...visibleFresh]
       persistSessionsList()
 
@@ -1563,6 +1588,11 @@ export const useChatStore = defineStore('chat', () => {
       const targetId = savedId && sessions.value.some(s => s.id === savedId)
         ? savedId
         : representedTarget?.id || sessions.value[0]?.id
+      logSessionLoad('restore-target', {
+        savedId,
+        representedTargetId: representedTarget?.id || null,
+        targetId: targetId || null,
+      })
       if (targetId) {
         await switchSession(targetId)
       }

@@ -6,6 +6,7 @@ import type {
   ConversationMessage,
   ConversationSummary,
 } from '../../services/hermes/conversations'
+import { logger } from '../../services/logger'
 import { listLiveTuiSessionKeys } from '../../services/hermes/tui-live'
 
 const SQLITE_AVAILABLE = (() => {
@@ -285,7 +286,15 @@ function bridgeContextHistoryText(value: unknown): string {
 
 function contextReferencesParent(parent: ConversationSessionRow, child: ConversationSessionRow): boolean {
   const history = bridgeContextHistoryText(child.raw_preview || child.preview || child.title)
-  if (!history) return false
+  if (!history) {
+    logger.info({
+      parentId: parent.id,
+      childId: child.id,
+      childPreview: child.preview,
+      childRawPreview: child.raw_preview,
+    }, '[conversations-db] bridge-context parent-reference miss: no history text')
+    return false
+  }
   const anchors = [
     parent.raw_context_anchor,
     parent.raw_preview,
@@ -294,7 +303,16 @@ function contextReferencesParent(parent: ConversationSessionRow, child: Conversa
   ]
     .map(anchor => normalizeText(anchor))
     .filter(anchor => anchor.length >= 8)
-  return anchors.some(anchor => history.includes(anchor) || anchor.includes(history))
+  const matched = anchors.some(anchor => history.includes(anchor) || anchor.includes(history))
+  if (!matched) {
+    logger.info({
+      parentId: parent.id,
+      childId: child.id,
+      history,
+      anchors: anchors.slice(0, 10),
+    }, '[conversations-db] bridge-context parent-reference miss: history does not reference parent')
+  }
+  return matched
 }
 
 function isLikelyOrphanContinuation(parent: ConversationSessionRow, child: ConversationSessionRow): boolean {
@@ -335,15 +353,7 @@ function isLikelyBridgeContextRootContinuation(parent: ConversationSessionRow, c
   if (child.id === parent.id || child.source !== parent.source || child.source !== 'tui') return false
   if (child.parent_session_id != null && child.parent_session_id !== parent.id) return false
   if (!isBridgeContextPrompt(child.raw_preview || child.preview || child.title)) return false
-  if (!contextReferencesParent(parent, child)) return false
-  if (!parent.has_visible_messages && Number(parent.tool_call_count || 0) <= 0) return false
-
-  const childStarted = Number(child.started_at || 0)
-  const parentStarted = Number(parent.started_at || 0)
-  if (childStarted < parentStarted) return false
-
-  const activeGap = childStarted - Number(parent.last_active || parent.started_at || 0)
-  return activeGap >= -LINEAGE_TOLERANCE_SECONDS && activeGap <= DUPLICATE_CONTINUATION_WINDOW_SECONDS
+  return false
 }
 
 function linkOrphanCompressionContinuations(sessions: ConversationSessionRow[]) {
@@ -376,50 +386,15 @@ function linkOrphanCompressionContinuations(sessions: ConversationSessionRow[]) 
 }
 
 function linkOrphanBridgeContextRootContinuations(sessions: ConversationSessionRow[]) {
-  const parentless = sessions.filter(session =>
-    session.parent_session_id == null
-    && session.source === 'tui'
-    && isBridgeContextPrompt(session.raw_preview || session.preview || session.title),
-  )
-  const candidates = sessions.filter(session =>
-    session.source === 'tui'
-  )
-
-  for (const child of parentless) {
-    const parent = candidates
-      .filter(candidate => isLikelyBridgeContextRootContinuation(candidate, child))
-      .sort((a, b) => {
-        const aGap = Math.abs(Number(child.started_at || 0) - Number(a.last_active || a.started_at || 0))
-        const bGap = Math.abs(Number(child.started_at || 0) - Number(b.last_active || b.started_at || 0))
-        if (aGap !== bGap) return aGap - bGap
-        return b.last_active - a.last_active
-      })[0]
-    if (parent) child.parent_session_id = parent.id
-  }
+  // Disabled: root-level bridge-context sessions are too ambiguous to safely
+  // auto-link. They often carry copied context text but are not reliable
+  // evidence of a parent-child relationship.
 }
 
 function linkOrphanBridgeContextBranchContinuations(sessions: ConversationSessionRow[]) {
-  const parentless = sessions.filter(session =>
-    session.parent_session_id == null
-    && session.source === 'tui'
-    && isBridgeContextPrompt(session.raw_preview || session.preview || session.title),
-  )
-  const branchParents = sessions.filter(session =>
-    session.parent_session_id != null
-    && session.source === 'tui',
-  )
-
-  for (const child of parentless) {
-    const parent = branchParents
-      .filter(candidate => isLikelyBridgeContextBranchContinuation(candidate, child))
-      .sort((a, b) => {
-        const aDelta = Math.abs(Number(child.started_at || 0) - Number(a.started_at || 0))
-        const bDelta = Math.abs(Number(child.started_at || 0) - Number(b.started_at || 0))
-        if (aDelta !== bDelta) return aDelta - bDelta
-        return b.id.localeCompare(a.id)
-      })[0]
-    if (parent) child.parent_session_id = parent.id
-  }
+  // Disabled: root-level bridge-context sessions are too ambiguous to safely
+  // re-parent under an existing continuation chain. This was creating false
+  // branch children such as 181042/181317 under 180009.
 }
 
 function continuationCandidates(parent: ConversationSessionRow, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, allowTool = false): ConversationSessionRow[] {
@@ -602,15 +577,32 @@ function isVisibleConversationStart(session: ConversationSessionRow | undefined,
     && session.parent_session_id == null
     && isBridgeContextPrompt(session.raw_preview || session.preview || session.title)
   ) {
+    logConversationDecision('hide-top-level-root-bridge-context', session, { reason: 'bridge-context root should be folded' })
     return false
   }
-  if (isLatestCompressionContinuation(session, byId, childrenByParent)) return true
-  if (isLatestBridgeContextContinuation(session, byId, childrenByParent)) return true
-  if (nextContinuationChild(session, byId, childrenByParent)) return false
-  if (hasBridgeContextContinuationDescendant(session, byId, childrenByParent)) return false
-  return (session.parent_session_id == null || isBranchRoot(session, byId))
+  if (isLatestCompressionContinuation(session, byId, childrenByParent)) {
+    logConversationDecision('keep-visible-latest-compression-continuation', session, { reason: 'latest compression continuation' })
+    return true
+  }
+  if (isLatestBridgeContextContinuation(session, byId, childrenByParent)) {
+    logConversationDecision('keep-visible-latest-bridge-context-continuation', session, { reason: 'latest bridge-context continuation' })
+    return true
+  }
+  if (nextContinuationChild(session, byId, childrenByParent)) {
+    logConversationDecision('hide-visible-root-has-continuation-child', session, { reason: 'has newer continuation child' })
+    return false
+  }
+  if (hasBridgeContextContinuationDescendant(session, byId, childrenByParent)) {
+    logConversationDecision('hide-root-has-bridge-context-descendant', session, { reason: 'bridge-context descendant exists' })
+    return false
+  }
+  const visible = (session.parent_session_id == null || isBranchRoot(session, byId))
     && !isCompressionContinuationChild(session, byId, childrenByParent)
     && !isCompressionLineageChild(session, byId)
+  if (visible) {
+    logConversationDecision('keep-visible-root', session, { reason: 'root or branch root with no newer continuation' })
+  }
+  return visible
 }
 
 function collectConversationChain(rootId: string, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, allowTool = false): ConversationSessionRow[] {
@@ -627,6 +619,24 @@ function collectConversationChain(rootId: string, byId: Map<string, Conversation
 
 function representedSessionIds(chain: ConversationSessionRow[]): string[] {
   return [...new Set(chain.map(session => safeText(session.id)).filter(Boolean))]
+}
+
+function logConversationDecision(stage: string, session: ConversationSessionRow | undefined, detail: Record<string, unknown> = {}) {
+  if (!session) return
+  logger.info({
+    sessionId: session.id,
+    source: session.source,
+    parentSessionId: session.parent_session_id,
+    startedAt: session.started_at,
+    endedAt: session.ended_at,
+    endReason: session.end_reason,
+    hasVisibleMessages: session.has_visible_messages,
+    isActive: session.is_active,
+    isLiveTuiProcess: session.is_live_tui_process,
+    preview: session.preview,
+    rawPreview: session.raw_preview,
+    ...detail,
+  }, '[conversations-db] %s', stage)
 }
 
 function bridgeContextHistoryChain(chain: ConversationSessionRow[]): ConversationSessionRow[] {
@@ -680,6 +690,14 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionR
   const branchSessionCount = countConversationBranchSessions(chain, byId, childrenByParent)
     + (compressionHistory.length ? 1 + countConversationBranchSessions(compressionHistory, byId, childrenByParent) : 0)
     + (bridgeContextHistory.length ? bridgeContextHistory.length + countConversationBranchSessions(bridgeContextHistory, byId, childrenByParent) : 0)
+  logger.info({
+    rootId,
+    chainIds: chain.map(session => session.id),
+    compressionHistoryIds: compressionHistory.map(session => session.id),
+    bridgeContextHistoryIds: bridgeContextHistory.map(session => session.id),
+    representedSessionIds: representedSessionIds(chain),
+    branchSessionCount,
+  }, '[conversations-db] aggregate-summary')
 
   return {
     ...toSummary(root),
@@ -1101,12 +1119,21 @@ async function loadConversationSessions(source?: string, includeTool = false): P
     linkOrphanCompressionContinuations(sessions)
     linkOrphanBridgeContextRootContinuations(sessions)
     linkOrphanBridgeContextBranchContinuations(sessions)
+    logger.info({
+      source: source || 'all',
+      includeTool,
+      rowCount: rows.length,
+      sessionCount: sessions.length,
+      liveTuiCount: liveTuiSessionKeys.size,
+      sampleIds: sessions.slice(0, 20).map(session => session.id),
+    }, '[conversations-db] load-conversation-sessions')
     if (source && source !== 'tui') return sessions
 
     const knownIds = new Set(sessions.map(session => session.id))
     for (const sessionKey of liveTuiSessionKeys) {
       if (!knownIds.has(sessionKey)) {
         sessions.push(createLiveTuiPlaceholderSession(sessionKey, nowSeconds))
+        logger.info({ sessionKey }, '[conversations-db] add-live-tui-placeholder')
       }
     }
     return sessions

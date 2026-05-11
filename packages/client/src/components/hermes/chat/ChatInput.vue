@@ -24,6 +24,8 @@ const isDragging = ref(false)
 const dragCounter = ref(0)
 const isComposing = ref(false)
 const autoPlaySpeech = ref(false)
+const INPUT_BASE_HEIGHT = 32
+const INPUT_MAX_HEIGHT = 100
 
 const willQueueInput = computed(() => {
   if (!chatStore.isRunActive) return false
@@ -103,6 +105,7 @@ onMounted(() => {
     autoPlaySpeech.value = savedAutoPlaySpeech === 'true'
     chatStore.setAutoPlaySpeech(autoPlaySpeech.value)
   }
+  requestAnimationFrame(() => syncTextareaHeight())
 })
 watch(() => useProfilesStore().activeProfileName, loadContextLength)
 watch(() => useAppStore().selectedModel, loadContextLength)
@@ -217,7 +220,7 @@ function handleSend() {
   attachments.value = []
 
   if (textareaRef.value) {
-    textareaRef.value.style.height = 'auto'
+    syncTextareaHeight()
   }
 }
 
@@ -243,18 +246,48 @@ function handleKeydown(e: KeyboardEvent) {
   handleSend()
 }
 
-function handleInput(e: Event) {
-  const el = e.target as HTMLTextAreaElement
+function syncTextareaHeight(target?: HTMLTextAreaElement | null) {
+  const el = target || textareaRef.value
+  if (!el) return
+  const before = el.style.height
+  if (!inputText.value.trim()) {
+    el.style.height = `${INPUT_BASE_HEIGHT}px`
+    el.style.overflowY = 'hidden'
+    console.info('[ChatInput] reset empty height', {
+      before,
+      after: el.style.height,
+      valueLength: inputText.value.length,
+    })
+    return
+  }
   el.style.height = '0px'
-  el.style.height = Math.min(el.scrollHeight, 100) + 'px'
+  const nextHeight = Math.max(INPUT_BASE_HEIGHT, Math.min(el.scrollHeight, INPUT_MAX_HEIGHT))
+  el.style.height = `${nextHeight}px`
+  el.style.overflowY = el.scrollHeight > INPUT_MAX_HEIGHT ? 'auto' : 'hidden'
+  console.info('[ChatInput] handleInput height', {
+    before,
+    after: el.style.height,
+    scrollHeight: el.scrollHeight,
+    valueLength: inputText.value.length,
+  })
+}
+
+function handleInput(e: Event) {
+  syncTextareaHeight(e.target as HTMLTextAreaElement)
 }
 
 watch(inputText, async () => {
   await nextTick()
   const el = textareaRef.value
   if (!el) return
-  el.style.height = '0px'
-  el.style.height = Math.min(el.scrollHeight, 100) + 'px'
+  const before = el.style.height
+  syncTextareaHeight(el)
+  console.info('[ChatInput] inputText watch height', {
+    before,
+    after: textareaRef.value?.style.height,
+    scrollHeight: textareaRef.value?.scrollHeight,
+    valueLength: inputText.value.length,
+  })
 })
 
 function removeAttachment(id: string) {
@@ -680,17 +713,17 @@ function isImage(type: string): boolean {
   min-width: 0;
   display: block;
   box-sizing: border-box;
-  padding: 0;
+  padding: 4px 0;
   background: none;
   border: none;
   outline: none;
   color: $text-primary;
   font-family: $font-ui;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 24px;
   resize: none;
   max-height: 100px;
-  min-height: 20px;
+  min-height: 32px;
   overflow-y: hidden;
 
   &::placeholder {
