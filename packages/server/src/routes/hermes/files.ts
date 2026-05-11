@@ -1,4 +1,5 @@
 import Router from '@koa/router'
+import type { Context } from 'koa'
 import {
   createFileProvider,
   resolveHermesPath,
@@ -8,7 +9,7 @@ import {
 
 export const fileRoutes = new Router()
 
-function handleError(ctx: any, err: any) {
+function handleError(ctx: Context, err: any) {
   const code = err.code || 'unknown'
   const statusMap: Record<string, number> = {
     missing_path: 400,
@@ -29,7 +30,7 @@ function handleError(ctx: any, err: any) {
 }
 
 // GET /api/hermes/files/list?path=
-fileRoutes.get('/api/hermes/files/list', async (ctx) => {
+fileRoutes.get('/api/hermes/files/list', async (ctx: Context) => {
   const relativePath = (ctx.query.path as string) || ''
   try {
     const absPath = resolveHermesPath(relativePath)
@@ -46,7 +47,7 @@ fileRoutes.get('/api/hermes/files/list', async (ctx) => {
 })
 
 // GET /api/hermes/files/stat?path=
-fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
+fileRoutes.get('/api/hermes/files/stat', async (ctx: Context) => {
   const relativePath = ctx.query.path as string
   if (!relativePath) {
     ctx.status = 400
@@ -64,7 +65,7 @@ fileRoutes.get('/api/hermes/files/stat', async (ctx) => {
 })
 
 // GET /api/hermes/files/read?path=
-fileRoutes.get('/api/hermes/files/read', async (ctx) => {
+fileRoutes.get('/api/hermes/files/read', async (ctx: Context) => {
   const relativePath = ctx.query.path as string
   if (!relativePath) {
     ctx.status = 400
@@ -87,7 +88,7 @@ fileRoutes.get('/api/hermes/files/read', async (ctx) => {
 })
 
 // PUT /api/hermes/files/write  body: { path, content }
-fileRoutes.put('/api/hermes/files/write', async (ctx) => {
+fileRoutes.put('/api/hermes/files/write', async (ctx: Context) => {
   const { path: relativePath, content } = ctx.request.body as { path?: string; content?: string }
   if (!relativePath) {
     ctx.status = 400
@@ -116,7 +117,7 @@ fileRoutes.put('/api/hermes/files/write', async (ctx) => {
 })
 
 // DELETE /api/hermes/files/delete  body: { path, recursive? }
-fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
+fileRoutes.delete('/api/hermes/files/delete', async (ctx: Context) => {
   const { path: relativePath, recursive } = ctx.request.body as { path?: string; recursive?: boolean }
   if (!relativePath) {
     ctx.status = 400
@@ -143,7 +144,7 @@ fileRoutes.delete('/api/hermes/files/delete', async (ctx) => {
 })
 
 // POST /api/hermes/files/rename  body: { oldPath, newPath }
-fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
+fileRoutes.post('/api/hermes/files/rename', async (ctx: Context) => {
   const { oldPath, newPath } = ctx.request.body as { oldPath?: string; newPath?: string }
   if (!oldPath || !newPath) {
     ctx.status = 400
@@ -167,7 +168,7 @@ fileRoutes.post('/api/hermes/files/rename', async (ctx) => {
 })
 
 // POST /api/hermes/files/mkdir  body: { path }
-fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
+fileRoutes.post('/api/hermes/files/mkdir', async (ctx: Context) => {
   const { path: relativePath } = ctx.request.body as { path?: string }
   if (!relativePath) {
     ctx.status = 400
@@ -185,7 +186,7 @@ fileRoutes.post('/api/hermes/files/mkdir', async (ctx) => {
 })
 
 // POST /api/hermes/files/copy  body: { srcPath, destPath }
-fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
+fileRoutes.post('/api/hermes/files/copy', async (ctx: Context) => {
   const { srcPath, destPath } = ctx.request.body as { srcPath?: string; destPath?: string }
   if (!srcPath || !destPath) {
     ctx.status = 400
@@ -204,7 +205,7 @@ fileRoutes.post('/api/hermes/files/copy', async (ctx) => {
 })
 
 // POST /api/hermes/files/upload?path=  (multipart/form-data)
-fileRoutes.post('/api/hermes/files/upload', async (ctx) => {
+fileRoutes.post('/api/hermes/files/upload', async (ctx: Context) => {
   const targetDir = (ctx.query.path as string) || ''
   const contentType = ctx.get('content-type') || ''
   if (!contentType.startsWith('multipart/form-data')) {

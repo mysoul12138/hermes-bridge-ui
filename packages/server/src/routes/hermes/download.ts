@@ -1,4 +1,5 @@
 import Router from '@koa/router'
+import type { Context } from 'koa'
 import { basename, extname } from 'path'
 import {
   createFileProvider,
@@ -62,7 +63,7 @@ function getMimeType(fileName: string): string {
   return MIME_MAP[ext] || 'application/octet-stream'
 }
 
-downloadRoutes.get('/api/hermes/download', async (ctx) => {
+downloadRoutes.get('/api/hermes/download', async (ctx: Context) => {
   const filePath = ctx.query.path as string | undefined
   const fileName = ctx.query.name as string | undefined
 

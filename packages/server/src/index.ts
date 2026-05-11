@@ -1,4 +1,5 @@
 import Koa from 'koa'
+import type { Context } from 'koa'
 import cors from '@koa/cors'
 import bodyParser from '@koa/bodyparser'
 import serve from 'koa-static'
@@ -114,7 +115,7 @@ export async function bootstrap() {
   // SPA fallback
   const distDir = resolve(__dirname, '..', 'client')
   app.use(serve(distDir))
-  app.use(async (ctx) => {
+  app.use(async (ctx: Context) => {
     if (!ctx.path.startsWith('/api') &&
       ctx.path !== '/health' &&
       ctx.path !== '/upload' &&

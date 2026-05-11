@@ -1,4 +1,5 @@
 import Router from '@koa/router'
+import type { Context } from 'koa'
 import type { GroupChatServer } from '../../services/hermes/group-chat'
 
 export const groupChatRoutes = new Router()
@@ -18,7 +19,7 @@ function generateId(): string {
 }
 
 // Create room
-groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
+groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -66,7 +67,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms', async (ctx) => {
 })
 
 // Get room detail and messages
-groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -87,7 +88,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
 })
 
 // List rooms
-groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {
+groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -99,7 +100,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms', async (ctx) => {
 })
 
 // Get room by invite code
-groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
+groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -117,7 +118,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/join/:code', async (ctx) => {
 })
 
 // Update room invite code
-groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/invite-code', async (ctx) => {
+groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/invite-code', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -136,7 +137,7 @@ groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/invite-code', async (c
 })
 
 // Add agent to room
-groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) => {
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -178,7 +179,7 @@ groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) 
 })
 
 // List agents in room
-groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) => {
+groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -190,7 +191,7 @@ groupChatRoutes.get('/api/hermes/group-chat/rooms/:roomId/agents', async (ctx) =
 })
 
 // Remove agent from room
-groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/agents/:agentId', async (ctx) => {
+groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/agents/:agentId', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -203,7 +204,7 @@ groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId/agents/:agentId', a
 })
 
 // Delete room
-groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
+groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -219,7 +220,7 @@ groupChatRoutes.delete('/api/hermes/group-chat/rooms/:roomId', async (ctx) => {
 })
 
 // Update room compression config
-groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/config', async (ctx) => {
+groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/config', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
@@ -239,7 +240,7 @@ groupChatRoutes.put('/api/hermes/group-chat/rooms/:roomId/config', async (ctx) =
 })
 
 // Force compress a room's context
-groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/compress', async (ctx) => {
+groupChatRoutes.post('/api/hermes/group-chat/rooms/:roomId/compress', async (ctx: Context) => {
     if (!chatServer) {
         ctx.status = 503
         ctx.body = { error: 'Group chat not initialized' }
