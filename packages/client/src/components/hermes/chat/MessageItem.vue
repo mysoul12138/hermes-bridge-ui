@@ -66,6 +66,12 @@ const showStreamingCursor = computed(() =>
   !!props.message.isStreaming && parsedThinking.value.body.trim().length > 0,
 );
 
+const renderBodyAsPlainText = computed(() =>
+  props.message.role === "assistant"
+  && !!props.message.isStreaming
+  && parsedThinking.value.body.trim().length > 0,
+);
+
 const isLongUserMessage = computed(() => {
   if (props.message.role !== "user") return false;
   const content = props.message.content || "";
@@ -757,8 +763,13 @@ onBeforeUnmount(() => {
                   <MarkdownRenderer v-else :content="thinkingFullText" />
                 </div>
               </div>
+              <pre
+                v-if="renderBodyAsPlainText"
+                class="message-stream-text"
+                :class="{ 'with-streaming-cursor': showStreamingCursor }"
+              >{{ parsedThinking.body }}</pre>
               <MarkdownRenderer
-                v-if="parsedThinking.body"
+                v-else-if="parsedThinking.body"
                 :content="parsedThinking.body"
                 :class="{ 'with-streaming-cursor': showStreamingCursor }"
               />
@@ -1267,12 +1278,26 @@ onBeforeUnmount(() => {
     }
   }
 
-  .thinking-stream-text {
+  .thinking-stream-text,
+  .message-stream-text {
     margin: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     font: inherit;
+    line-height: inherit;
   }
+}
+
+.with-streaming-cursor.message-stream-text::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  background-color: $text-muted;
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  animation: blink 0.8s infinite;
 }
 
 .message-meta {

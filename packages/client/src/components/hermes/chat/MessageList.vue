@@ -24,6 +24,8 @@ let scrollbarHideTimer: ReturnType<typeof setTimeout> | undefined;
 let resizeObserver: ResizeObserver | null = null;
 let scrollbarDragStartY = 0;
 let scrollbarDragStartScrollTop = 0;
+let customScrollbarRafId: number | null = null;
+let followLatestRafId: number | null = null;
 
 const displayMessages = computed(() => chatStore.displayMessages);
 
@@ -128,6 +130,14 @@ function updateCustomScrollbar() {
   scrollbarThumbTop.value = 14 + Math.round((scrollTop / scrollRange) * maxTop);
 }
 
+function scheduleCustomScrollbarUpdate() {
+  if (customScrollbarRafId !== null) return;
+  customScrollbarRafId = requestAnimationFrame(() => {
+    customScrollbarRafId = null;
+    updateCustomScrollbar();
+  });
+}
+
 function scheduleScrollbarHide() {
   if (scrollbarHideTimer) clearTimeout(scrollbarHideTimer);
   if (isDraggingScrollbar.value || isHoveringScrollbar.value) return;
@@ -137,7 +147,7 @@ function scheduleScrollbarHide() {
 }
 
 function revealCustomScrollbar() {
-  updateCustomScrollbar();
+  scheduleCustomScrollbarUpdate();
   const el = listRef.value;
   if (!el || el.scrollHeight <= el.clientHeight + 1) return;
   showCustomScrollbar.value = true;
@@ -160,7 +170,7 @@ function handleScrollbarPointerMove(event: PointerEvent) {
   const nextTop = scrollTopFromThumbDelta(event.clientY - scrollbarDragStartY);
   el.scrollTop = Math.max(0, Math.min(nextTop, el.scrollHeight - el.clientHeight));
   updateLatestState();
-  updateCustomScrollbar();
+  scheduleCustomScrollbarUpdate();
 }
 
 function stopScrollbarDrag() {
@@ -274,6 +284,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (scrollbarHideTimer) clearTimeout(scrollbarHideTimer);
+  if (customScrollbarRafId !== null) cancelAnimationFrame(customScrollbarRafId);
+  if (followLatestRafId !== null) cancelAnimationFrame(followLatestRafId);
   stopScrollbarDrag();
   resizeObserver?.disconnect();
   resizeObserver = null;
@@ -324,6 +336,15 @@ watch(
   },
 );
 
+function scheduleFollowLatest(sessionId = chatStore.activeSessionId) {
+  if (followLatestRafId !== null) return;
+  followLatestRafId = requestAnimationFrame(() => {
+    followLatestRafId = null;
+    scrollToBottom(false, sessionId);
+    scheduleCustomScrollbarUpdate();
+  });
+}
+
 // During streaming, follow growth only while the user remains at the latest edge.
 watch(
   () => {
@@ -352,8 +373,7 @@ watch(
       return;
     }
     if (!isAtLatest.value) return;
-    scrollToBottom(false, chatStore.activeSessionId);
-    nextTick(updateCustomScrollbar);
+    scheduleFollowLatest(chatStore.activeSessionId);
   },
 );
 </script>

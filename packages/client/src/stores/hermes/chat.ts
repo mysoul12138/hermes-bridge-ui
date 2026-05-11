@@ -216,7 +216,7 @@ function applySessionDetail(session: Session | undefined | null, detail: Partial
 const BRANCH_SESSION_META_KEY_PREFIX = 'hermes_branch_session_meta_v1_'
 const POLL_INTERVAL_MS = 2000
 const COMPRESSION_NOTICE_TTL_MS = 15_000
-const STREAM_FLUSH_INTERVAL_MS = 50
+const STREAM_FLUSH_INTERVAL_MS = 120
 
 const POLL_STABLE_EXITS = 3 // 3 × 2s = 6s of no change → assume run finished
 
