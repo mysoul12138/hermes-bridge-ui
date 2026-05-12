@@ -402,6 +402,34 @@ describe('Chat Store', () => {
     expect(store.isRunActive).toBe(false)
   })
 
+  it('cancels a slow-start run when stop is clicked before the run id arrives', async () => {
+    let resolveStartRun: (value: { run_id: string; status: string }) => void = () => {}
+    mockChatApi.startRun.mockImplementationOnce(() => new Promise(resolve => {
+      resolveStartRun = resolve
+    }))
+
+    const store = useChatStore()
+    const sendPromise = store.sendMessage('stop before run id')
+    await flushPromises()
+
+    expect(store.isRunActive).toBe(true)
+    await store.stopStreaming()
+    expect(store.isRunActive).toBe(false)
+
+    resolveStartRun({ run_id: 'run-stop-before-id', status: 'queued' })
+    await sendPromise
+    await flushPromises()
+
+    expect(mockChatApi.cancelRun).toHaveBeenCalledWith('run-stop-before-id')
+    expect(mockChatApi.streamRunEvents).not.toHaveBeenCalledWith(
+      'run-stop-before-id',
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Function),
+    )
+    expect(store.isRunActive).toBe(false)
+  })
+
   it('captures live tool payloads so tool cards can expand details', async () => {
     const store = useChatStore()
 
