@@ -530,16 +530,18 @@ function toSummary(session: ConversationSession): ConversationSummary {
   }
 }
 
-function aggregateSummary(rootId: string, byId: Map<string, ConversationSession>, childrenByParent: Map<string | null, string[]>): ConversationSummary | null {
+function aggregateSummary(rootId: string, byId: Map<string, ConversationSession>, childrenByParent: Map<string | null, string[]>, branchSessionCount: number): ConversationSummary | null {
   const chain = collectConversationChain(rootId, byId, childrenByParent)
   if (!chain.length || !hasVisibleHumanMessages(chain)) return null
+  const requestedRoot = byId.get(rootId)
   const root = chain[0]
   const last = chain[chain.length - 1]
   const title = root.title || excerpt(firstVisibleHumanText(chain.flatMap(sessionMessages)), 72) || null
   const preview = root.preview || excerpt(firstVisibleHumanText(chain.flatMap(sessionMessages)))
   const costStatuses = Array.from(new Set(chain.map(session => safeText(session.cost_status)).filter(Boolean)))
-  const branchSessionCount = countConversationBranchSessions(chain, byId, childrenByParent)
-
+  const normalizedBranchSessionCount = requestedRoot && isBridgeContextBranchContinuationChild(requestedRoot, byId)
+    ? 0
+    : branchSessionCount
   return {
     ...toSummary(root),
     title,
@@ -551,7 +553,7 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSession>
     billing_provider: last?.billing_provider ?? root.billing_provider ?? null,
     cost_status: costStatuses.length === 1 ? costStatuses[0] : 'mixed',
     thread_session_count: chain.length,
-    branch_session_count: branchSessionCount,
+    branch_session_count: normalizedBranchSessionCount,
     message_count: chain.reduce((sum, session) => sum + Number(session.message_count || 0), 0),
     tool_call_count: chain.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
     input_tokens: Number(last.input_tokens || 0),
@@ -622,7 +624,11 @@ export async function listConversationSummaries(options: ConversationListOptions
 
   const summaries = sessions
     .filter(session => isVisibleRoot(session, byId))
-    .map(session => aggregateSummary(session.id, byId, childrenByParent))
+    .map(session => {
+      const chain = collectConversationChain(session.id, byId, childrenByParent)
+      const branches = collectConversationBranches(chain, byId, childrenByParent)
+      return aggregateSummary(session.id, byId, childrenByParent, countBranches(branches))
+    })
     .filter((summary): summary is ConversationSummary => !!summary)
 
   return sortByRecency(summaries).slice(0, limit)

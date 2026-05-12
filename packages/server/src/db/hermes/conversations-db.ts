@@ -677,7 +677,7 @@ function toSummary(session: ConversationSessionRow): ConversationSummary {
   }
 }
 
-function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>): ConversationSummary | null {
+function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, branchSessionCount: number): ConversationSummary | null {
   const requestedRoot = byId.get(rootId)
   const compressionHistory = requestedRoot ? compressionPathToRoot(requestedRoot, byId).slice(0, -1) : []
   const bridgeContextHistory = requestedRoot ? bridgeContextHistoryPathToRoot(requestedRoot, byId) : []
@@ -687,16 +687,16 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionR
   const last = chain[chain.length - 1]
   const firstPreview = chain.map(session => session.preview).find(Boolean) || ''
   const costStatuses = Array.from(new Set(chain.map(session => safeText(session.cost_status)).filter(Boolean)))
-  const branchSessionCount = countConversationBranchSessions(chain, byId, childrenByParent)
-    + (compressionHistory.length ? 1 + countConversationBranchSessions(compressionHistory, byId, childrenByParent) : 0)
-    + (bridgeContextHistory.length ? bridgeContextHistory.length + countConversationBranchSessions(bridgeContextHistory, byId, childrenByParent) : 0)
+  const normalizedBranchSessionCount = requestedRoot && isBridgeContextBranchContinuationChild(requestedRoot, byId)
+    ? 0
+    : branchSessionCount
   logger.info({
     rootId,
     chainIds: chain.map(session => session.id),
     compressionHistoryIds: compressionHistory.map(session => session.id),
     bridgeContextHistoryIds: bridgeContextHistory.map(session => session.id),
     representedSessionIds: representedSessionIds(chain),
-    branchSessionCount,
+    branchSessionCount: normalizedBranchSessionCount,
   }, '[conversations-db] aggregate-summary')
 
   return {
@@ -711,7 +711,7 @@ function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionR
     billing_base_url: last?.billing_base_url ?? root.billing_base_url ?? null,
     cost_status: costStatuses.length === 1 ? costStatuses[0] : 'mixed',
     thread_session_count: chain.length,
-    branch_session_count: branchSessionCount,
+    branch_session_count: normalizedBranchSessionCount,
     message_count: chain.reduce((sum, session) => sum + Number(session.message_count || 0), 0),
     tool_call_count: chain.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
     input_tokens: Number(last.input_tokens || 0),
@@ -1159,12 +1159,21 @@ export async function listConversationSummariesFromDb(options: ConversationListO
     return sortByRecency(sessions.map(toSummary)).slice(0, limit)
   }
 
-  const summaries = sessions
-    .filter(session => isVisibleConversationStart(session, byId, childrenByParent))
-    .map(session => aggregateSummary(session.id, byId, childrenByParent))
-    .filter((summary): summary is ConversationSummary => !!summary)
+  const db = await openConversationDb()
+  try {
+    const summaries = sessions
+      .filter(session => isVisibleConversationStart(session, byId, childrenByParent))
+      .map(session => {
+        const chain = collectConversationChain(session.id, byId, childrenByParent)
+        const branches = collectConversationBranches(db, chain, byId, childrenByParent)
+        return aggregateSummary(session.id, byId, childrenByParent, countBranches(branches))
+      })
+      .filter((summary): summary is ConversationSummary => !!summary)
 
-  return sortByRecency(summaries).slice(0, limit)
+    return sortByRecency(summaries).slice(0, limit)
+  } finally {
+    db.close()
+  }
 }
 
 export async function getConversationDetailFromDb(sessionId: string, options: ConversationListOptions = {}): Promise<ConversationDetail | null> {
