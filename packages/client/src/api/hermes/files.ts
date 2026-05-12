@@ -72,6 +72,7 @@ export async function uploadFiles(targetDir: string, files: File[]): Promise<{ n
   const formData = new FormData()
   for (const file of files) {
     formData.append('file', file)
+    formData.append('relativePath', (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name)
   }
   const params = new URLSearchParams()
   if (targetDir) params.set('path', targetDir)

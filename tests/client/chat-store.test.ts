@@ -2267,6 +2267,95 @@ describe('Chat Store', () => {
     })
   })
 
+  it('preserves a steered user bubble when switching into a branch with matching fetched detail', async () => {
+    const rootId = 'root-steered-branch'
+    const branchId = 'branch-steered'
+
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, rootId)
+    window.localStorage.setItem(
+      SESSIONS_CACHE_KEY,
+      JSON.stringify([
+        {
+          id: rootId,
+          title: 'Root',
+          source: 'tui',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2,
+          branchSessionCount: 1,
+        },
+      ]),
+    )
+
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(rootId, 'Root', {
+        source: 'tui',
+        branch_session_count: 1,
+        branches: [{
+          session_id: branchId,
+          parent_session_id: rootId,
+          source: 'tui',
+          model: 'gpt-4o',
+          title: 'Branch steered',
+          started_at: 1710000002,
+          ended_at: null,
+          last_active: 1710000003,
+          is_active: false,
+          messages: [
+            { id: 1, session_id: branchId, role: 'user', content: 'adjust direction', timestamp: 1710000002 },
+          ],
+          visible_count: 1,
+          thread_session_count: 1,
+          branches: [],
+        }],
+      }),
+    ])
+    mockSessionsApi.fetchSession.mockImplementation(async (id: string) => {
+      if (id === rootId) return makeDetail(rootId, [])
+      if (id === branchId) {
+        return {
+          id: branchId,
+          source: 'tui',
+          title: 'Branch steered',
+          messages: [
+            { id: 1, role: 'user', content: 'adjust direction', timestamp: 1710000002 },
+          ],
+        } as any
+      }
+      return null
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.refreshSessionBranches(rootId)
+
+    store.sessions.push({
+      id: branchId,
+      title: 'Branch steered',
+      source: 'tui',
+      messages: [
+        { id: 'local-steer', role: 'user', content: 'adjust direction', timestamp: 1710000002, steered: true },
+      ],
+      createdAt: 1710000002000,
+      updatedAt: 1710000003000,
+      isBranchSession: true,
+      rootSessionId: rootId,
+    } as any)
+
+    await store.switchBranchSession(rootId, branchId)
+
+    const branchSession = store.sessions.find(session => session.id === branchId)
+    expect(branchSession?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: 'adjust direction',
+          steered: true,
+        }),
+      ]),
+    )
+  })
+
   it('keeps full branch detail when switching into a branch with equivalent fetched detail', async () => {
     const rootId = 'root-branch-equivalent'
     const branchId = 'branch-equivalent'

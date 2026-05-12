@@ -683,11 +683,11 @@ export const useChatStore = defineStore('chat', () => {
           if (mapped.length > 0) {
             const branchSummaryHasTools = nextSession.messages.some(message => message.role === 'tool')
             seededMessages = !branchSummaryHasTools
-              ? mapped
+              ? withLocalSteeredMessages(mapped, nextSession.messages)
               : (
                   serverHasBetterToolDetails(nextSession.messages, mapped)
-                    ? mergeServerToolDetails(nextSession.messages, mapped)
-                    : mapped
+                    ? withLocalSteeredMessages(mergeServerToolDetails(nextSession.messages, mapped), nextSession.messages)
+                    : withLocalSteeredMessages(mapped, nextSession.messages)
                 )
           }
         }
@@ -701,8 +701,8 @@ export const useChatStore = defineStore('chat', () => {
       if (existing) {
         const preserveToolDetails = serverHasBetterToolDetails(seededMessages, existing.messages)
         let nextMessages = preserveToolDetails
-          ? mergeServerToolDetails(seededMessages, existing.messages)
-          : seededMessages
+          ? withLocalSteeredMessages(mergeServerToolDetails(seededMessages, existing.messages), existing.messages)
+          : withLocalSteeredMessages(seededMessages, existing.messages)
         // Preserve reasoning and isStreaming from existing hydrated messages
         // when the incoming messages lack them.  Same logic as in
         // syncBranchSessionFromBranch to prevent thinking-block flicker.
