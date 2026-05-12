@@ -633,7 +633,7 @@ function collectSubagentBranchRoots(
     const childIds = effectiveChildren.get(parentId) || []
     for (const childId of childIds) {
       const child = byId.get(childId)
-      if (isSubagentSession(child)) roots.push(child)
+      if (child && isSubagentSession(child)) roots.push(child)
     }
   }
   return roots.sort((left, right) => {
@@ -1017,7 +1017,7 @@ function collectBranchRoots(chain: ConversationSessionRow[], byId: Map<string, C
     for (const childId of childIds) {
       if (chainIds.has(childId) || childId === continuation?.id) continue
       const child = byId.get(childId)
-      if (isRealConversationBranch(child, byId)) roots.push(child)
+      if (child && isRealConversationBranch(child, byId)) roots.push(child)
     }
   }
   return roots.sort((a, b) => {

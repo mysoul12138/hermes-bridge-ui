@@ -576,10 +576,52 @@ describe('Chat Store', () => {
     await store.sendMessage('continue with context')
 
     expect(store.activeCompression).toMatchObject({
+      mode: 'bridge_handoff',
       status: 'completed',
       messageCount: 8,
       tokenCount: 42000,
     })
+  })
+
+  it('cancels a bridge run on the first stop click', async () => {
+    const store = useChatStore()
+    await flushPromises()
+    await store.sendMessage('cancel this run')
+    await flushPromises()
+
+    expect(store.activeSessionId).toBeTruthy()
+    expect(store.isRunActive).toBe(true)
+
+    await store.stopStreaming()
+
+    expect(mockChatApi.cancelRun).toHaveBeenCalledWith('run-1')
+    expect(store.isRunActive).toBe(false)
+  })
+
+  it('ignores repeated stop clicks while a cancel is already in progress', async () => {
+    let resolveCancel: (() => void) | null = null
+    mockChatApi.cancelRun.mockImplementationOnce(() => new Promise<void>(resolve => {
+      resolveCancel = resolve
+    }))
+
+    const store = useChatStore()
+    await flushPromises()
+    await store.sendMessage('cancel once')
+    await flushPromises()
+
+    const firstStop = store.stopStreaming()
+    const secondStop = store.stopStreaming()
+    await flushPromises()
+
+    expect(store.isAborting).toBe(true)
+    expect(mockChatApi.cancelRun).toHaveBeenCalledTimes(1)
+
+    resolveCancel?.()
+    await firstStop
+    await secondStop
+    await flushPromises()
+
+    expect(store.isAborting).toBe(false)
   })
 
   it('does not show compression feedback for a newly mapped bridge session', async () => {
