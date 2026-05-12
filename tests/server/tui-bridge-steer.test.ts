@@ -510,6 +510,40 @@ describe('TuiBridgeService steer compatibility', () => {
     vi.useRealTimers()
   })
 
+  it('does not locally close a bridge run when interrupt was sent but session is still running', async () => {
+    vi.useFakeTimers()
+    const client = new FakeGatewayClient()
+    client.supportsSessionStatus = true
+    client.sessionRunning = true
+    const bridge = new TuiBridgeService(client as any)
+
+    ;(bridge as any).bridgeSessionsByWebSession.set('web-session', 'tui-session')
+    ;(bridge as any).activeRunsByBridgeSession.set('tui-session', 'bridge_run_cancel_pending')
+    ;(bridge as any).runs.set('bridge_run_cancel_pending', {
+      runId: 'bridge_run_cancel_pending',
+      webSessionId: 'web-session',
+      bridgeSessionId: 'tui-session',
+      events: [],
+      waiters: [],
+      closed: false,
+      lastActivityAt: Date.now(),
+    })
+
+    const cancelPromise = bridge.cancelRun('bridge_run_cancel_pending')
+    await vi.advanceTimersByTimeAsync(5200)
+    const result = await cancelPromise
+
+    expect(result).toMatchObject({
+      ok: false,
+      cancelled: false,
+      status: 'interrupt_sent',
+      bridge: true,
+    })
+    expect((bridge as any).runs.get('bridge_run_cancel_pending').closed).toBe(false)
+    expect((bridge as any).activeRunsByBridgeSession.get('tui-session')).toBe('bridge_run_cancel_pending')
+    vi.useRealTimers()
+  })
+
   it('adds server-tokenizer usage when bridge completion has no provider usage', async () => {
     vi.useFakeTimers()
     const client = new FakeGatewayClient()

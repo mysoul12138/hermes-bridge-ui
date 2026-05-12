@@ -407,15 +407,47 @@ export function withLocalSteeredMessages(mapped: Message[], current: Message[]):
   for (const msg of localPreserved) {
     const currentIdx = currentIndexById.get(msg.id) ?? -1
     let inserted = false
+    const nextAnchorId = (msg as Message & { nextMessageId?: string }).nextMessageId
+    if (nextAnchorId && anchorIds.has(nextAnchorId)) {
+      const insertIdx = result.findIndex(message => message.id === nextAnchorId)
+      if (insertIdx >= 0) {
+        result.splice(insertIdx, 0, msg)
+        inserted = true
+      }
+    }
     if (currentIdx >= 0) {
-      for (let i = currentIdx + 1; i < current.length; i += 1) {
-        const nextId = current[i]?.id
-        if (!nextId || !anchorIds.has(nextId)) continue
-        const insertIdx = result.findIndex(message => message.id === nextId)
-        if (insertIdx >= 0) {
-          result.splice(insertIdx, 0, msg)
+      if (!inserted) {
+        for (let i = currentIdx + 1; i < current.length; i += 1) {
+          const candidateNextId = current[i]?.id
+          if (!candidateNextId || !anchorIds.has(candidateNextId)) continue
+          const insertIdx = result.findIndex(message => message.id === candidateNextId)
+          if (insertIdx >= 0) {
+            result.splice(insertIdx, 0, msg)
+            inserted = true
+            break
+          }
+        }
+      }
+      if (!inserted) {
+        for (let i = currentIdx - 1; i >= 0; i -= 1) {
+          const previousId = current[i]?.id
+          if (!previousId || !anchorIds.has(previousId)) continue
+          const anchorIdx = result.findIndex(message => message.id === previousId)
+          if (anchorIdx >= 0) {
+            result.splice(anchorIdx + 1, 0, msg)
+            inserted = true
+            break
+          }
+        }
+      }
+    }
+    if (!inserted) {
+      const previousAnchorId = (msg as Message & { previousMessageId?: string }).previousMessageId
+      if (previousAnchorId && anchorIds.has(previousAnchorId)) {
+        const anchorIdx = result.findIndex(message => message.id === previousAnchorId)
+        if (anchorIdx >= 0) {
+          result.splice(anchorIdx + 1, 0, msg)
           inserted = true
-          break
         }
       }
     }
