@@ -316,6 +316,7 @@ export const useChatStore = defineStore('chat', () => {
   const focusMessageId = ref<string | null>(null)
   const streamStates = ref<Map<string, AbortController>>(new Map())
   const pendingRunStarts = ref<Set<string>>(new Set())
+  const cancelledPendingStarts = ref<Set<string>>(new Set())
   const isStreaming = computed(() => activeSessionId.value != null && streamStates.value.has(activeSessionId.value))
   const autoPlaySpeechEnabled = ref(false)
 
@@ -1232,6 +1233,7 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearPendingRunStart(sid: string) {
     pendingRunStarts.value.delete(sid)
+    cancelledPendingStarts.value.delete(sid)
   }
 
   function setAbortingSession(sid: string, aborting: boolean) {
@@ -2515,6 +2517,7 @@ export const useChatStore = defineStore('chat', () => {
       persistActiveMessages()
       persistSessionsList()
     }
+    cancelledPendingStarts.value.delete(sid)
     pendingRunStarts.value.add(sid)
 
     try {
@@ -2584,6 +2587,15 @@ export const useChatStore = defineStore('chat', () => {
         }
         persistSessionsList()
       }
+      if (cancelledPendingStarts.value.has(sid)) {
+        clearPendingRunStart(sid)
+        try {
+          await cancelRun(runId)
+        } catch (cancelErr) {
+          console.warn('Failed to cancel just-started run after early stop:', cancelErr)
+        }
+        return
+      }
       attachRunStream(sid, runId)
     } catch (err: any) {
       clearPendingRunStart(sid)
@@ -2643,7 +2655,9 @@ export const useChatStore = defineStore('chat', () => {
     const inFlight = readInFlight(sid)
     const ctrl = streamStates.value.get(sid)
     setAbortingSession(sid, true)
+    const stoppedBeforeRunId = pendingRunStarts.value.has(sid) && !inFlight?.runId && !ctrl
     clearPendingRunStart(sid)
+    if (stoppedBeforeRunId) cancelledPendingStarts.value.add(sid)
     try {
       if (inFlight?.runId) {
         await cancelRun(inFlight.runId)
