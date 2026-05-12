@@ -34,3 +34,4 @@ hermes-dependencies.md
 CLAUDE.md
 # Client source map artifacts
 packages/client/src/**/*.js
+scripts/replace-wsl-dist.ps1
