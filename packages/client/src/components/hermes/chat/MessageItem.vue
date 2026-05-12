@@ -773,15 +773,13 @@ onBeforeUnmount(() => {
                 :content="parsedThinking.body"
                 :class="{ 'with-streaming-cursor': showStreamingCursor }"
               />
-            </div>
-          </div>
-          <div v-if="message.role !== 'assistant' || hasVisibleMessageSurface" class="message-meta">
-            <span v-if="message.steered" class="queued-badge">{{ t('chat.messageSteered') }}</span>
-            <span v-else-if="message.queued" class="queued-badge">{{ t('chat.messageQueued') }}</span>
-            <div class="message-meta-hover">
-              <button
-                v-if="canPlaySpeech"
-                class="speech-bubble-btn"
+        </div>
+      </div>
+      <div v-if="message.role !== 'assistant' || hasVisibleMessageSurface" class="message-meta">
+        <div class="message-meta-hover">
+          <button
+            v-if="canPlaySpeech"
+            class="speech-bubble-btn"
                 :class="{ playing: isPlayingThisMessage, paused: isPausedThisMessage }"
                 @click="handleSpeechToggle"
                 :title="isPlayingThisMessage ? (isPausedThisMessage ? t('chat.resumeSpeech') : t('chat.pauseSpeech')) : t('chat.playSpeech')"
@@ -804,11 +802,15 @@ onBeforeUnmount(() => {
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                   <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                 </svg>
-              </button>
-              <span class="message-time">{{ timeStr }}</span>
-            </div>
-          </div>
+          </button>
+          <span class="message-time">{{ timeStr }}</span>
         </div>
+        <div class="message-meta-status">
+          <span v-if="message.steered" class="queued-badge">{{ t('chat.messageSteered') }}</span>
+          <span v-else-if="message.queued" class="queued-badge">{{ t('chat.messageQueued') }}</span>
+        </div>
+      </div>
+    </div>
       </div>
     </template>
   </div>
@@ -1303,7 +1305,8 @@ onBeforeUnmount(() => {
 .message-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 8px;
   margin-top: 4px;
   padding: 0 4px;
 }
@@ -1312,6 +1315,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+  justify-content: flex-start;
   opacity: 0;
   transition: opacity 0.15s ease;
 
@@ -1355,10 +1359,16 @@ onBeforeUnmount(() => {
   }
 }
 
+.message-meta-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .queued-badge {
   display: inline-flex;
   align-items: center;
-  margin-right: 6px;
   padding: 1px 6px;
   border-radius: 999px;
   background: rgba(var(--accent-primary-rgb), 0.12);
