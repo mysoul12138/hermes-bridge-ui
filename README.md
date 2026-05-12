@@ -45,23 +45,6 @@ npm run build
 
 Build artifacts are written to `dist/`.
 
-## WSL Runtime Replacement
-
-In our current deployment workflow, the built `dist/` is copied into the WSL global install path.
-
-Replacement is done with the existing script:
-
-```powershell
-powershell.exe -Command "E:\BaiduNetdiskDownload\auto\HermesWebUi_fork_main_latest\scripts\replace-wsl-dist.ps1"
-```
-
-After replacement, restart is done manually in WSL:
-
-```bash
-hermes-web-ui stop
-hermes-web-ui
-```
-
 ## Runtime Notes
 
 - Hermes runtime data is typically stored under `~/.hermes`

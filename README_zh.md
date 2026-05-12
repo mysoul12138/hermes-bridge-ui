@@ -45,23 +45,6 @@ npm run build
 
 构建产物输出到 `dist/`。
 
-## WSL 运行时替换
-
-在当前实际部署工作流里，构建后的 `dist/` 会替换到 WSL 全局安装位置。
-
-替换命令沿用现有脚本：
-
-```powershell
-powershell.exe -Command "E:\BaiduNetdiskDownload\auto\HermesWebUi_fork_main_latest\scripts\replace-wsl-dist.ps1"
-```
-
-替换后，由用户手动在 WSL 里重启：
-
-```bash
-hermes-web-ui stop
-hermes-web-ui
-```
-
 ## 运行说明
 
 - Hermes 数据一般在 `~/.hermes`
