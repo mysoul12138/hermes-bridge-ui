@@ -32,6 +32,7 @@ import {
   bridgeLocalSessionKey as _bridgeLocalSessionKey,
   bridgePersistentSessionKey as _bridgePersistentSessionKey,
   bridgeSeenKey as _bridgeSeenKey,
+  steerHistoryKey as _steerHistoryKey,
   msgsCacheKey as _msgsCacheKey,
   inFlightKey as _inFlightKey,
   legacyStorageKey as _legacyStorageKey,
@@ -58,7 +59,10 @@ import {
   clearBridgeLocalSession as _clearBridgeLocalSession,
   readBridgePersistentSessionId as _readBridgePersistentSessionId,
   readBridgeBackingSessionId as _readBridgeBackingSessionId,
+  readSteerHistory as _readSteerHistory,
+  appendSteerHistory as _appendSteerHistory,
   type InFlightRun,
+  type SteerHistoryEntry,
 } from '@/custom/utils/bridge-session-helpers'
 import {
   uid,
@@ -258,6 +262,8 @@ function legacyMsgsCacheKey(sid: string): string | null { return _legacyMsgsCach
 function legacyInFlightKey(sid: string): string | null { return _legacyInFlightKey(getProfileName(), sid) }
 function loadJson<T>(key: string): T | null { return _loadJson<T>(key) }
 function loadJsonWithFallback<T>(key: string, legacyKey?: string | null): T | null { return _loadJsonWithFallback<T>(key, legacyKey) }
+function readSteerHistory(sid: string): SteerHistoryEntry[] { return _readSteerHistory(getProfileName(), sid) }
+function appendSteerHistory(sid: string, content: string, timestamp: number) { return _appendSteerHistory(getProfileName(), sid, content, timestamp) }
 function saveJson(key: string, value: unknown) { _saveJson(key, value) }
 function saveJsonWithLegacy(key: string, value: unknown, legacyKey?: string | null) { _saveJsonWithLegacy(key, value, legacyKey) }
 function removeItem(key: string) { _removeItem(key) }
@@ -679,7 +685,7 @@ export const useChatStore = defineStore('chat', () => {
         const detail = await fetchResolvedSessionDetail(branchId)
         if (detail && detail.messages && !isBridgeFallbackSession(detail) && detailMessagesBelongToBranch(detail, branchId)) {
           prefetchedDetail = detail
-          const mapped = mapHermesMessages(detail.messages)
+          const mapped = reapplySteerHistory(branchId, mapHermesMessages(detail.messages))
           if (mapped.length > 0) {
             const branchSummaryHasTools = nextSession.messages.some(message => message.role === 'tool')
             seededMessages = !branchSummaryHasTools
@@ -1039,15 +1045,17 @@ export const useChatStore = defineStore('chat', () => {
   function addSteeredMessage(sid: string, content: string, attachments?: Attachment[]): string {
     const text = content.trim()
     const id = uid()
+    const timestamp = Date.now()
     const userMsg: Message = {
       id,
       role: 'user',
       content: text,
-      timestamp: Date.now(),
+      timestamp,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
       steered: true,
     }
     addMessage(sid, userMsg)
+    appendSteerHistory(sid, text, timestamp)
     updateSessionTitle(sid)
     if (sid === activeSessionId.value) {
       persistActiveMessages()
@@ -1064,6 +1072,20 @@ export const useChatStore = defineStore('chat', () => {
       persistActiveMessages()
       persistSessionsList()
     }
+  }
+
+  function reapplySteerHistory(sid: string, messages: Message[]): Message[] {
+    const history = readSteerHistory(sid)
+    if (!history.length) return messages
+    const steeredTexts = new Set(history.map(entry => entry.content.trim()).filter(Boolean))
+    if (!steeredTexts.size) return messages
+    return messages.map(message => {
+      if (message.role !== 'user') return message
+      if (message.steered) return message
+      return steeredTexts.has(message.content.trim())
+        ? { ...message, steered: true }
+        : message
+    })
   }
 
   async function steerBusyInput(sid: string, content: string, attachments?: Attachment[]) {
@@ -1352,7 +1374,7 @@ export const useChatStore = defineStore('chat', () => {
         const target = sessions.value.find(s => s.id === sid)
         if (!target) return
         if (isBridgeFallbackSession(detail) && target.messages.length > 0) return
-        const mapped = mapHermesMessages(detail.messages || [])
+        const mapped = reapplySteerHistory(sid, mapHermesMessages(detail.messages || []))
         // Use the same current-turn comparison as switchSession: server is
         // ahead only when it has a newer user turn or the assistant output
         // after the current user turn has caught up.
@@ -1629,7 +1651,7 @@ export const useChatStore = defineStore('chat', () => {
       const target = sessions.value.find(s => s.id === sid)
       if (!target) return false
       if (isBridgeFallbackSession(detail) && target.messages.length > 0) return true
-      const mapped = mapHermesMessages(detail.messages || [])
+      const mapped = reapplySteerHistory(sid, mapHermesMessages(detail.messages || []))
       // If the session has a resuming run, local messages are more current —
       // only merge tool detail enrichment from the server.
       const hasResumingRun = resumingRuns.value.has(sid)
@@ -2027,7 +2049,7 @@ export const useChatStore = defineStore('chat', () => {
       const detail = prefetchedDetail ?? await fetchResolvedSessionDetail(sessionId)
       if (detail && detail.messages) {
         if (isBridgeFallbackSession(detail) && activeSession.value.messages.length > 0) return
-        const mapped = mapHermesMessages(detail.messages)
+        const mapped = reapplySteerHistory(sessionId, mapHermesMessages(detail.messages))
         // When switching to a different session, accept the server's messages
         // — but NOT if the target session has a live stream or a resuming run.
         // In that case local messages are more up-to-date (streaming content,
