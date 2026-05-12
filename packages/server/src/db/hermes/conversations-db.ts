@@ -442,6 +442,35 @@ function isCompressionContinuationChild(session: ConversationSessionRow | undefi
   return nextContinuationChild(parent, byId, childrenByParent)?.id === session.id
 }
 
+function isExplicitCompressionContinuationChild(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>): boolean {
+  if (!session?.parent_session_id) return false
+  const parent = byId.get(session.parent_session_id)
+  if (!parent) return false
+  if (!isCompressionEndReason(parent.end_reason)) return false
+  if (session.source !== parent.source) return false
+  if (session.source !== 'tui' && session.source !== 'webui-bridge' && session.source !== 'cli') return false
+  if (session.id === parent.id) return false
+
+  const childStarted = Number(session.started_at || 0)
+  const parentStarted = Number(parent.started_at || 0)
+  if (childStarted < parentStarted) return false
+
+  const parentPreview = normalizeText(parent.preview)
+  const childPreview = normalizeText(session.preview)
+  const parentTitle = normalizeText(parent.title)
+  const childTitle = normalizeText(session.title)
+
+  const sameVisiblePrompt = !!parentPreview && !!childPreview && parentPreview === childPreview
+  const sameVisibleTitle = !!parentTitle && !!childTitle && parentTitle === childTitle
+  const numberedContinuationTitle =
+    !!parent.title
+    && !!session.title
+    && normalizeText(session.title).startsWith(normalizeText(parent.title))
+  const bridgePromptStyle = isBridgeContextPrompt(session.raw_preview || session.preview || session.title)
+
+  return sameVisiblePrompt || sameVisibleTitle || numberedContinuationTitle || bridgePromptStyle
+}
+
 function isLikelyExplicitContinuation(parent: ConversationSessionRow, child: ConversationSessionRow): boolean {
   // Fallback for sessions whose parent_session_id was explicitly set by the
   // gateway (e.g. webui-bridge continuations) but whose source / preview does
@@ -575,6 +604,7 @@ function isAgentLikeBranchSession(session: ConversationSessionRow | undefined, b
   if (!parent || parent.source === 'tool') return false
   if (isBridgeContextPrompt(session.raw_preview || session.preview || session.title)) return false
   if (isCompressionLineageChild(session, byId)) return false
+  if (isExplicitCompressionContinuationChild(session, byId)) return false
   if (isBridgeContextBranchContinuationChild(session, byId)) return false
 
   const childStarted = Number(session.started_at || 0)

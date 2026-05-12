@@ -478,6 +478,111 @@ describe('conversation DB service', () => {
     expect(detailFromRoot?.branches ?? []).toEqual([])
   })
 
+  it('keeps explicit tui compression continuations in the main conversation instead of the branch tree', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'root-skill',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: '更新合并指南 Skill',
+      started_at: 100,
+      ended_at: 200,
+      end_reason: 'compression',
+      message_count: 4,
+      tool_call_count: 2,
+      input_tokens: 10,
+      output_tokens: 20,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'skill-2',
+      parent_session_id: 'root-skill',
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: '更新合并指南 Skill #2',
+      started_at: 180,
+      ended_at: 220,
+      end_reason: 'tui_shutdown',
+      message_count: 4,
+      tool_call_count: 1,
+      input_tokens: 8,
+      output_tokens: 12,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'skill-3',
+      parent_session_id: 'root-skill',
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: '更新合并指南 Skill #3',
+      started_at: 200.01,
+      ended_at: null,
+      end_reason: null,
+      message_count: 3,
+      tool_call_count: 1,
+      input_tokens: 8,
+      output_tokens: 12,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'root-skill', role: 'user', content: '我把指南更新了   你现在把合并指南skill 更新一下', timestamp: 101 })
+    insertMessage(db, { id: 2, session_id: 'root-skill', role: 'assistant', content: '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。', timestamp: 102 })
+    insertMessage(db, { id: 3, session_id: 'root-skill', role: 'assistant', content: '开始更新 skill。', timestamp: 150 })
+
+    insertMessage(db, { id: 4, session_id: 'skill-2', role: 'user', content: '我把指南更新了   你现在把合并指南skill 更新一下', timestamp: 181 })
+    insertMessage(db, { id: 5, session_id: 'skill-2', role: 'assistant', content: '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。', timestamp: 182 })
+    insertMessage(db, { id: 6, session_id: 'skill-2', role: 'user', content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.', timestamp: 183 })
+    insertMessage(db, { id: 7, session_id: 'skill-2', role: 'assistant', content: '开始更新 skill：我会新增一个“从项目开发指南同步的合并约束”章节。', timestamp: 184 })
+
+    insertMessage(db, { id: 8, session_id: 'skill-3', role: 'user', content: '我把指南更新了   你现在把合并指南skill 更新一下', timestamp: 200.02 })
+    insertMessage(db, { id: 9, session_id: 'skill-3', role: 'assistant', content: '我先读取你上传的新版 SKILL.md 和现有 skill。', timestamp: 200.03 })
+    insertMessage(db, { id: 10, session_id: 'skill-3', role: 'assistant', content: '我看到上传的新版 SKILL.md 不是简单覆盖版。', timestamp: 200.04 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root-skill'])
+    expect(summaries[0]?.branch_session_count).toBe(0)
+
+    const detail = await mod.getConversationDetailFromDb('root-skill', { humanOnly: true })
+    expect(detail?.branches ?? []).toEqual([])
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '我把指南更新了   你现在把合并指南skill 更新一下',
+      '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。',
+      '开始更新 skill。',
+      '我把指南更新了   你现在把合并指南skill 更新一下',
+      '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。',
+      '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.',
+      '开始更新 skill：我会新增一个“从项目开发指南同步的合并约束”章节。',
+      '我把指南更新了   你现在把合并指南skill 更新一下',
+      '我先读取你上传的新版 SKILL.md 和现有 skill。',
+      '我看到上传的新版 SKILL.md 不是简单覆盖版。',
+    ])
+  })
+
   it('aggregates an orphan continuation without showing it as a separate conversation', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
