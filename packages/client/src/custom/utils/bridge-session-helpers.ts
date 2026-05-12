@@ -11,6 +11,7 @@ export const BRIDGE_LOCAL_SESSION_KEY_PREFIX = 'hermes_bridge_local_session_v1_'
 export const BRIDGE_PERSISTENT_SESSION_KEY_PREFIX = 'hermes_bridge_persistent_session_v1_'
 export const BRIDGE_SEEN_KEY_PREFIX = 'hermes_bridge_seen_v1_'
 export const SESSION_MODEL_OVERRIDE_KEY_PREFIX = 'hermes_session_model_override_v1_'
+export const STEER_HISTORY_KEY_PREFIX = 'hermes_steer_history_v1_'
 export const IN_FLIGHT_TTL_MS = 15 * 60 * 1000 // 15 minutes
 
 const LEGACY_STORAGE_KEY = 'hermes_active_session'
@@ -27,6 +28,11 @@ export interface SessionModelOverride {
   model: string
   provider?: string
   updatedAt: number
+}
+
+export interface SteerHistoryEntry {
+  content: string
+  timestamp: number
 }
 
 // ─── localStorage utilities ───────────────────────────────────────────
@@ -127,6 +133,10 @@ export function msgsCacheKey(profileName: string, sid: string): string {
 
 export function inFlightKey(profileName: string, sid: string): string {
   return `hermes_in_flight_v1_${profileName}_${sid}`
+}
+
+export function steerHistoryKey(profileName: string, sid: string): string {
+  return `${STEER_HISTORY_KEY_PREFIX}${profileName}_${sid}`
 }
 
 export function legacyStorageKey(profileName: string): string | null {
@@ -271,4 +281,21 @@ export function readInFlight(profileName: string, sid: string): InFlightRun | nu
 
 export function clearInFlight(profileName: string, sid: string) {
   removeItemWithLegacy(inFlightKey(profileName, sid), legacyInFlightKey(profileName, sid))
+}
+
+export function readSteerHistory(profileName: string, sid: string): SteerHistoryEntry[] {
+  return loadJson<SteerHistoryEntry[]>(steerHistoryKey(profileName, sid)) || []
+}
+
+export function writeSteerHistory(profileName: string, sid: string, entries: SteerHistoryEntry[]) {
+  saveJson(steerHistoryKey(profileName, sid), entries)
+}
+
+export function appendSteerHistory(profileName: string, sid: string, content: string, timestamp: number) {
+  const normalized = content.trim()
+  if (!normalized) return
+  const current = readSteerHistory(profileName, sid)
+  const next = [...current, { content: normalized, timestamp }]
+    .slice(-50)
+  writeSteerHistory(profileName, sid, next)
 }

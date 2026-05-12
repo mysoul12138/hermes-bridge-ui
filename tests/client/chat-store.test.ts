@@ -2356,6 +2356,45 @@ describe('Chat Store', () => {
     )
   })
 
+  it('reapplies a persisted steer record even when the local steered message was already lost', async () => {
+    const sid = 'steer-history-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([{
+      id: sid,
+      title: 'Steer History',
+      source: 'tui',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]))
+    window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
+      { content: 'adjust direction', timestamp: Date.now() - 1000 },
+    ]))
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([])
+    mockSessionsApi.fetchSession.mockResolvedValue({
+      id: sid,
+      source: 'tui',
+      title: 'Steer History',
+      messages: [
+        { id: 'u1', role: 'user', content: 'adjust direction', timestamp: Date.now() - 1000 },
+      ],
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await flushPromises()
+
+    expect(store.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: 'adjust direction',
+          steered: true,
+        }),
+      ]),
+    )
+  })
+
   it('keeps full branch detail when switching into a branch with equivalent fetched detail', async () => {
     const rootId = 'root-branch-equivalent'
     const branchId = 'branch-equivalent'
