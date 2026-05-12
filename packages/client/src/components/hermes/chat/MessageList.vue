@@ -61,6 +61,7 @@ const compressionNoticeClass = computed(() => ({
 const compressionNoticeTitle = computed(() => {
   const state = chatStore.activeCompression;
   if (!state) return "";
+  if (state.mode === "bridge_handoff") return t("chat.bridgeContextContinued");
   if (state.status === "started") return t("chat.compressionStarted");
   if (state.status === "failed") return t("chat.compressionFailed");
   return t("chat.compressionCompleted");

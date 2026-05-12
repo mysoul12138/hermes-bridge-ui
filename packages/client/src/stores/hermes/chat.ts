@@ -154,6 +154,7 @@ export interface Session {
 
 export interface CompressionState {
   status: 'started' | 'completed' | 'failed'
+  mode?: 'compression' | 'bridge_handoff'
   startedAt: number
   updatedAt: number
   messageCount?: number
@@ -315,6 +316,7 @@ export const useChatStore = defineStore('chat', () => {
   // localStorage after a refresh and are polling fetchSession for progress.
   // UI shows the thinking indicator while this is set.
   const resumingRuns = ref<Set<string>>(new Set())
+  const abortingSessions = ref<Set<string>>(new Set())
   const isRunActive = computed(() => {
     if (isStreaming.value) return true
     const sid = activeSessionId.value
@@ -323,7 +325,10 @@ export const useChatStore = defineStore('chat', () => {
     if (activeSession.value?.endedAt != null) return false
     return !!readInFlight(sid)
   })
-  const isAborting = computed(() => false)
+  const isAborting = computed(() => {
+    const sid = activeSessionId.value
+    return !!sid && abortingSessions.value.has(sid)
+  })
   const pollTimers = new Map<string, ReturnType<typeof setInterval>>()
   const pollSignatures = new Map<string, { sig: string, stableTicks: number }>()
   const approvalsBySession = ref<Record<string, ApprovalState>>({})
@@ -1182,6 +1187,13 @@ export const useChatStore = defineStore('chat', () => {
 
   function clearPendingRunStart(sid: string) {
     pendingRunStarts.value.delete(sid)
+  }
+
+  function setAbortingSession(sid: string, aborting: boolean) {
+    const next = new Set(abortingSessions.value)
+    if (aborting) next.add(sid)
+    else next.delete(sid)
+    abortingSessions.value = next
   }
 
   function sessionFetchId(sid: string): string {
@@ -2519,6 +2531,7 @@ export const useChatStore = defineStore('chat', () => {
         if (run.context_handoff) {
           setCompressionState(sid, {
             status: 'completed',
+            mode: 'bridge_handoff',
             messageCount: run.context_message_count || undefined,
             tokenCount: numberFromRunEvent(run.context_token_count),
           })
@@ -2580,46 +2593,40 @@ export const useChatStore = defineStore('chat', () => {
   async function stopStreaming() {
     const sid = activeSessionId.value
     if (!sid) return
+    if (abortingSessions.value.has(sid)) return
     const inFlight = readInFlight(sid)
     const ctrl = streamStates.value.get(sid)
+    setAbortingSession(sid, true)
     clearPendingRunStart(sid)
-    if (ctrl) {
-      ctrl.abort()
-      const msgs = getSessionMsgs(sid)
-      const lastMsg = msgs[msgs.length - 1]
-      if (lastMsg?.isStreaming) {
-        updateMessage(sid, lastMsg.id, { isStreaming: false })
-      }
-      streamStates.value.delete(sid)
-      stopPolling(sid)
-      stopApprovalPolling(sid)
-      stopClarifyPolling(sid)
-      clearApproval(sid)
-      clearClarify(sid)
-      if (sid === activeSessionId.value) persistActiveMessages()
-      persistSessionsList()
-    } else {
-      stopPolling(sid)
-      stopApprovalPolling(sid)
-      stopClarifyPolling(sid)
-      clearApproval(sid)
-      clearClarify(sid)
-      if (sid === activeSessionId.value) persistActiveMessages()
-      persistSessionsList()
-    }
-
-    if (!inFlight?.runId || !inFlight.runId.startsWith('bridge_run_')) {
-      clearInFlight(sid)
-      await submitNextQueuedMessage(sid)
-      return
-    }
-
     try {
-      await cancelRun(inFlight.runId)
+      if (inFlight?.runId) {
+        await cancelRun(inFlight.runId)
+      }
+      if (ctrl) {
+        ctrl.abort()
+        const msgs = getSessionMsgs(sid)
+        const lastMsg = msgs[msgs.length - 1]
+        if (lastMsg?.isStreaming) {
+          updateMessage(sid, lastMsg.id, { isStreaming: false })
+        }
+        streamStates.value.delete(sid)
+      }
+      stopPolling(sid)
+      stopApprovalPolling(sid)
+      stopClarifyPolling(sid)
+      clearApproval(sid)
+      clearClarify(sid)
       clearInFlight(sid)
+      clearCompressionForSession(sid)
+      const persistentSid = readBridgePersistentSessionId(sid)
+      if (persistentSid && persistentSid !== sid) clearCompressionForSession(persistentSid)
+      if (sid === activeSessionId.value) persistActiveMessages()
+      persistSessionsList()
       await submitNextQueuedMessage(sid)
     } catch (err) {
       console.warn('Failed to cancel run:', err)
+    } finally {
+      setAbortingSession(sid, false)
     }
   }
 

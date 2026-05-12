@@ -798,10 +798,9 @@ describe('conversation DB service', () => {
     const rootDetail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
     expect(rootDetail?.messages.map((message: any) => message.content)).toEqual([
       'root request',
-      'branch work before compaction',
       'continue branch',
     ])
-    expect(rootDetail?.branches ?? []).toEqual([])
+    expect(rootDetail?.branches?.map((branch: any) => branch.session_id)).toEqual(['branch-placeholder'])
   })
 
   it('folds branched children back into the root conversation', async () => {

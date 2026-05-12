@@ -210,6 +210,7 @@ export default {
     compressionStarted: 'Compressing earlier context before continuing this session',
     compressionCompleted: 'Earlier context was compressed, and the reply continues in the new session',
     compressionFailed: 'Context compression did not finish; continuing with the original context',
+    bridgeContextContinued: 'Previous context was carried over and the reply continues in this conversation',
     compressionTokenStats: '{before} -> {after} tokens',
     compressionPreparingStats: 'About {tokens} tokens to compress',
     compressionMessageStats: '{count} messages to compress',

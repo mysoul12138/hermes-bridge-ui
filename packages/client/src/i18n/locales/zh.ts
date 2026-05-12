@@ -210,6 +210,7 @@ export default {
     compressionStarted: '正在压缩较早上下文，准备续写当前会话',
     compressionCompleted: '已压缩较早上下文，并继续在新会话中回复',
     compressionFailed: '上下文压缩未完成，已继续使用原上下文回复',
+    bridgeContextContinued: '已承接前文上下文，继续在当前会话中回复',
     compressionTokenStats: '{before} -> {after} tokens',
     compressionPreparingStats: '待压缩约 {tokens} tokens',
     compressionMessageStats: '待压缩 {count} 条消息',

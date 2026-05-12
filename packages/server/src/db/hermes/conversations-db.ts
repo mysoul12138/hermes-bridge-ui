@@ -567,6 +567,24 @@ function isSubagentSession(session: ConversationSessionRow | undefined): boolean
   return !!session && session.source === 'subagent'
 }
 
+function isAgentLikeBranchSession(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>): boolean {
+  if (!session || session.source === 'tool') return false
+  if (session.source === 'subagent') return true
+  if ((session.source !== 'tui' && session.source !== 'webui-bridge') || !session.parent_session_id) return false
+  const parent = byId.get(session.parent_session_id)
+  if (!parent || parent.source === 'tool') return false
+  if (isBridgeContextPrompt(session.raw_preview || session.preview || session.title)) return false
+  if (isCompressionLineageChild(session, byId)) return false
+  if (isBridgeContextBranchContinuationChild(session, byId)) return false
+
+  const childStarted = Number(session.started_at || 0)
+  const parentStarted = Number(parent.started_at || 0)
+  if (childStarted < parentStarted) return false
+
+  if (parent.ended_at == null) return true
+  return childStarted + LINEAGE_TOLERANCE_SECONDS < Number(parent.ended_at || 0)
+}
+
 function effectiveParentId(session: ConversationSessionRow | undefined, inferredParents: Map<string, string>): string | null {
   if (!session) return null
   return session.parent_session_id ?? inferredParents.get(session.id) ?? null
@@ -615,7 +633,7 @@ function mainlineSessionsForRoot(
   const memo = new Map<string, string | null>()
   return sessions
     .filter(session => session.source !== 'tool')
-    .filter(session => !isSubagentSession(session))
+    .filter(session => !isAgentLikeBranchSession(session, byId))
     .filter(session => rootConversationIdForSession(session.id, byId, inferredParents, memo) === rootId)
     .sort((left, right) => {
       if (left.started_at !== right.started_at) return left.started_at - right.started_at
@@ -630,10 +648,10 @@ function collectSubagentBranchRoots(
 ): ConversationSessionRow[] {
   const roots: ConversationSessionRow[] = []
   for (const parentId of mainlineIds) {
-    const childIds = effectiveChildren.get(parentId) || []
+      const childIds = effectiveChildren.get(parentId) || []
     for (const childId of childIds) {
       const child = byId.get(childId)
-      if (child && isSubagentSession(child)) roots.push(child)
+      if (child && isAgentLikeBranchSession(child, byId)) roots.push(child)
     }
   }
   return roots.sort((left, right) => {
@@ -649,12 +667,12 @@ function buildSubagentBranchTree(
   effectiveChildren: Map<string | null, string[]>,
   seen = new Set<string>(),
 ): ConversationBranch | null {
-  if (!isSubagentSession(root) || seen.has(root.id)) return null
+  if (!isAgentLikeBranchSession(root, byId) || seen.has(root.id)) return null
   seen.add(root.id)
 
   const childBranches = (effectiveChildren.get(root.id) || [])
     .map(childId => byId.get(childId))
-    .filter((child): child is ConversationSessionRow => isSubagentSession(child))
+    .filter((child): child is ConversationSessionRow => isAgentLikeBranchSession(child, byId))
     .map(child => buildSubagentBranchTree(db, child, byId, effectiveChildren, seen))
     .filter((branch): branch is ConversationBranch => !!branch)
 
