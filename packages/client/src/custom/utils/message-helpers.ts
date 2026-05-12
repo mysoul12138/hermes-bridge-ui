@@ -19,6 +19,8 @@ import {
 } from '@/custom/utils/run-event-helpers'
 import { scrubBuggyReasoning } from '@/custom/utils/display-helpers'
 
+const STEER_TIMESTAMP_MATCH_WINDOW_MS = 5000
+
 export function isPersistentTuiSessionId(sessionId: string): boolean {
   return /^\d{8}_\d{6}_[0-9a-f]+$/i.test(sessionId)
 }
@@ -357,18 +359,33 @@ export function compareServerMessages(local: Message[], server: Message[]) {
 }
 
 export function withLocalSteeredMessages(mapped: Message[], current: Message[]): Message[] {
-  const mappedUserTexts = new Set(mapped.filter(message => message.role === 'user').map(message => message.content.trim()).filter(Boolean))
-  const localSteeredByText = new Map(
-    current
-      .filter(message => message.role === 'user' && message.steered)
-      .map(message => [message.content.trim(), message] as const)
-      .filter(([text]) => !!text),
-  )
+  const localSteeredByText = new Map<string, Message[]>()
+  for (const message of current) {
+    if (message.role !== 'user' || !message.steered) continue
+    const text = message.content.trim()
+    if (!text) continue
+    const queue = localSteeredByText.get(text) || []
+    queue.push(message)
+    localSteeredByText.set(text, queue)
+  }
+  const matchedLocalSteeredIds = new Set<string>()
 
   const merged = mapped.map(message => {
     if (message.role !== 'user') return message
-    const localSteered = localSteeredByText.get(message.content.trim())
+    const candidates = localSteeredByText.get(message.content.trim())
+    const localSteered = candidates?.find(candidate => {
+      const serverTs = message.timestamp || 0
+      const localTs = candidate.timestamp || 0
+      if (!serverTs || !localTs) return true
+      return serverTs >= localTs - STEER_TIMESTAMP_MATCH_WINDOW_MS
+    })
     if (!localSteered) return message
+    matchedLocalSteeredIds.add(localSteered.id)
+    if (candidates) {
+      const matchedIndex = candidates.findIndex(candidate => candidate.id === localSteered.id)
+      if (matchedIndex >= 0) candidates.splice(matchedIndex, 1)
+      if (candidates.length === 0) localSteeredByText.delete(message.content.trim())
+    }
     return {
       ...message,
       steered: true,
@@ -378,7 +395,11 @@ export function withLocalSteeredMessages(mapped: Message[], current: Message[]):
   // Preserve both steered (in-run) and queued (waiting for next turn) user
   // messages that the server hasn't seen yet.  Without the queued check,
   // switching away from a session with pending queued messages would lose them.
-  const localPreserved = current.filter(message => (message.steered || message.queued) && !mappedUserTexts.has(message.content.trim()))
+  const localPreserved = current.filter(message => {
+    if (message.queued) return true
+    if (!message.steered) return false
+    return !matchedLocalSteeredIds.has(message.id)
+  })
   if (!localPreserved.length) return merged
   // Insert each preserved message at the position matching its timestamp
   // instead of appending all at the end

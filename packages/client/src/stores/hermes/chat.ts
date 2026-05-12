@@ -1077,14 +1077,26 @@ export const useChatStore = defineStore('chat', () => {
   function reapplySteerHistory(sid: string, messages: Message[]): Message[] {
     const history = readSteerHistory(sid)
     if (!history.length) return messages
-    const steeredTexts = new Set(history.map(entry => entry.content.trim()).filter(Boolean))
-    if (!steeredTexts.size) return messages
+    const pendingEntries = history
+      .map(entry => ({
+        content: entry.content.trim(),
+        timestamp: entry.timestamp || 0,
+      }))
+      .filter(entry => !!entry.content)
+    if (!pendingEntries.length) return messages
     return messages.map(message => {
       if (message.role !== 'user') return message
       if (message.steered) return message
-      return steeredTexts.has(message.content.trim())
-        ? { ...message, steered: true }
-        : message
+      const text = message.content.trim()
+      if (!text) return message
+      const matchIndex = pendingEntries.findIndex(entry => {
+        if (entry.content !== text) return false
+        if (!entry.timestamp || !message.timestamp) return true
+        return message.timestamp >= entry.timestamp - 5000
+      })
+      if (matchIndex < 0) return message
+      pendingEntries.splice(matchIndex, 1)
+      return { ...message, steered: true }
     })
   }
 
