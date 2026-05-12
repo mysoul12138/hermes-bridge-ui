@@ -508,7 +508,7 @@ function collectBranchRoots(chain: ConversationSession[], byId: Map<string, Conv
     for (const childId of childIds) {
       if (chainIds.has(childId) || childId === continuation?.id) continue
       const child = byId.get(childId)
-      if (isRealConversationBranch(child, byId)) roots.push(child)
+      if (child && isRealConversationBranch(child, byId)) roots.push(child)
     }
   }
   return roots.sort((a, b) => {
