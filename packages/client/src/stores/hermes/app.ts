@@ -17,6 +17,31 @@ const WEB_UI_VERSION = __APP_VERSION__
 
 const SIDEBAR_COLLAPSED_KEY = 'hermes_sidebar_collapsed'
 
+function parseVersionParts(version: string): number[] | null {
+  const parts = version.match(/\d+/g)
+  if (!parts?.length) return null
+  return parts.map(part => Number.parseInt(part, 10))
+}
+
+function compareVersions(left: string, right: string): number {
+  if (left === right) return 0
+
+  const leftParts = parseVersionParts(left)
+  const rightParts = parseVersionParts(right)
+  if (leftParts && !rightParts) return 1
+  if (!leftParts && rightParts) return -1
+  if (!leftParts || !rightParts) return left.localeCompare(right)
+
+  const length = Math.max(leftParts.length, rightParts.length)
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0
+    const rightPart = rightParts[index] ?? 0
+    if (leftPart !== rightPart) return leftPart - rightPart
+  }
+
+  return 0
+}
+
 export const useAppStore = defineStore('app', () => {
   const sidebarOpen = ref(false)
   // Desktop-only collapsed state (icon-rail mode). Persisted to localStorage.
@@ -64,7 +89,7 @@ export const useAppStore = defineStore('app', () => {
       const res = await checkHealth()
       connected.value = res.status === 'ok'
       if (res.webui_version) serverVersion.value = res.webui_version
-      clientOutdated.value = !!res.webui_version && res.webui_version !== WEB_UI_VERSION
+      clientOutdated.value = !!res.webui_version && compareVersions(res.webui_version, WEB_UI_VERSION) > 0
       if (res.webui_latest) latestVersion.value = res.webui_latest
       updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
