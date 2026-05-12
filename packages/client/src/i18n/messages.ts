@@ -6,12 +6,14 @@ import ja from './locales/ja'
 import ko from './locales/ko'
 import pt from './locales/pt'
 import zh from './locales/zh'
+import zhTW from './locales/zh-TW'
 
 export type LocaleMessages = Record<string, unknown>
 
 export const rawMessages = {
   en,
   zh,
+  'zh-TW': zhTW,
   ja,
   ko,
   fr,

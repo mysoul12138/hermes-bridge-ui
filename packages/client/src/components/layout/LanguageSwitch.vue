@@ -6,6 +6,7 @@ const { locale } = useI18n()
 
 const options = [
   { label: '中文', value: 'zh' },
+  { label: '繁體中文', value: 'zh-TW' },
   { label: 'English', value: 'en' },
   { label: '日本語', value: 'ja' },
   { label: '한국어', value: 'ko' },

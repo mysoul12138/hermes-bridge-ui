@@ -11,6 +11,8 @@ export interface OpenaiTtsOptions {
   apiKey?: string
   model?: string
   voice?: string
+  rate?: string
+  pitch?: string
 }
 
 export interface SpeechState {
@@ -266,6 +268,8 @@ export function useSpeech() {
       input: text,
       voice: opts.voice || 'alloy',
     }
+    if (opts.rate) body.rate = opts.rate
+    if (opts.pitch) body.pitch = opts.pitch
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',

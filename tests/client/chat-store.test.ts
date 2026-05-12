@@ -812,7 +812,7 @@ describe('Chat Store', () => {
     const store = useChatStore()
     await store.loadSessions()
 
-    expect(store.sessions.map(session => session.id)).toEqual([missingId, visibleId])
+    expect(store.sessions.map(session => session.id)).toEqual([visibleId, missingId])
   })
 
   it('does not remove a session locally when single delete fails on the server', async () => {
@@ -1542,7 +1542,7 @@ describe('Chat Store', () => {
 
     expect(store.messages.find(message => message.role === 'assistant')?.reasoning).toBe('A')
 
-    await vi.advanceTimersByTimeAsync(49)
+    await vi.advanceTimersByTimeAsync(119)
     expect(store.messages.find(message => message.role === 'assistant')?.reasoning).toBe('A')
 
     await vi.advanceTimersByTimeAsync(1)

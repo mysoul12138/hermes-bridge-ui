@@ -1,6 +1,8 @@
 export interface TtsOptions {
   text: string
   lang?: string
+  rate?: string
+  pitch?: string
 }
 
 export async function generateSpeech(opts: TtsOptions): Promise<{ audio: Blob; engine: string }> {
