@@ -1,5 +1,6 @@
 import Router from '@koa/router'
 import type { Context } from 'koa'
+import { dirname } from 'path'
 import {
   createFileProvider,
   resolveHermesPath,
@@ -229,6 +230,7 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx: Context) => {
   const parts = splitMultipart(raw, boundaryBuf)
   const provider = await createFileProvider()
   const results: { name: string; path: string }[] = []
+  const relativePaths: string[] = []
 
   for (const part of parts) {
     const headerEnd = part.indexOf(Buffer.from('\r\n\r\n'))
@@ -238,12 +240,18 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx: Context) => {
     const data = part.subarray(headerEnd + 4, part.length - 2)
 
     let filename = ''
+    let fieldName = ''
+    const nameMatch = header.match(/name="([^"]+)"/)
+    if (nameMatch) fieldName = nameMatch[1]
     const filenameStarMatch = header.match(/filename\*=UTF-8''(.+)/i)
     if (filenameStarMatch) {
       filename = decodeURIComponent(filenameStarMatch[1])
     } else {
       const filenameMatch = header.match(/filename="([^"]+)"/)
-      if (!filenameMatch) continue
+      if (!filenameMatch) {
+        if (fieldName === 'relativePath') relativePaths.push(data.toString('utf-8'))
+        continue
+      }
       filename = filenameMatch[1]
     }
 
@@ -253,7 +261,9 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx: Context) => {
       return
     }
 
-    const filePath = targetDir ? `${targetDir}/${filename}` : filename
+    const relativePath = relativePaths.shift() || filename
+    const normalizedRelativePath = relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+    const filePath = targetDir ? `${targetDir}/${normalizedRelativePath}` : normalizedRelativePath
     if (isSensitivePath(filePath)) {
       ctx.status = 403
       ctx.body = { error: `Cannot overwrite sensitive file: ${filename}`, code: 'permission_denied' }
@@ -261,6 +271,7 @@ fileRoutes.post('/api/hermes/files/upload', async (ctx: Context) => {
     }
 
     const absPath = resolveHermesPath(filePath)
+    await provider.mkDir(dirname(absPath))
     await provider.writeFile(absPath, data)
     results.push({ name: filename, path: filePath })
   }
