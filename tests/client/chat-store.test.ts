@@ -1840,6 +1840,47 @@ describe('Chat Store', () => {
     expect(store.activeSession?.messages.map(message => message.id)).toEqual(['u2'])
   })
 
+  it('does not let an older switchSession detail response overwrite the current active title', async () => {
+    const sessionA = 'race-a'
+    const sessionB = 'race-b'
+
+    let resolveA: ((value: any) => void) | null = null
+    let resolveB: ((value: any) => void) | null = null
+    mockSessionsApi.fetchSession.mockImplementation((id: string) => {
+      if (id === sessionA) {
+        return new Promise(resolve => {
+          resolveA = resolve
+        }) as any
+      }
+      if (id === sessionB) {
+        return new Promise(resolve => {
+          resolveB = resolve
+        }) as any
+      }
+      return Promise.resolve(null) as any
+    })
+
+    const store = useChatStore()
+    store.sessions.push(
+      { id: sessionA, title: 'Title A', source: 'tui', messages: [], createdAt: 1, updatedAt: 1 } as any,
+      { id: sessionB, title: 'Title B', source: 'tui', messages: [], createdAt: 2, updatedAt: 2 } as any,
+    )
+    store.activeSessionId = sessionA as any
+    store.activeSession = store.sessions.find((session: any) => session.id === sessionA) as any
+    const switchA = store.switchSession(sessionA)
+    const switchB = store.switchSession(sessionB)
+
+    resolveB?.({ ...makeDetail(sessionB, [{ id: 'b1', role: 'user', content: 'B', timestamp: 2 }]), title: 'Title B' })
+    await switchB
+    resolveA?.({ ...makeDetail(sessionA, [{ id: 'a1', role: 'user', content: 'A', timestamp: 1 }]), title: 'Title A' })
+    await switchA
+    await flushPromises()
+
+    expect(store.activeSessionId).toBe(sessionB)
+    expect(store.activeSession?.title).toBe('Title B')
+    expect(store.messages.map(message => message.id)).toEqual(['b1'])
+  })
+
   it('rebinds the active session object immediately after sessions list refresh', async () => {
     const sid = 'active-session'
     window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)

@@ -215,6 +215,21 @@ function logSessionLoad(stage: string, detail: Record<string, unknown>) {
   console.info(`[chat.loadSessions] ${stage}`, detail)
 }
 
+function logTitleMutation(source: string, sessionId: string, before: string | undefined, after: string | undefined, detail: Record<string, unknown> = {}) {
+  if ((before || '') === (after || '')) return
+  console.info('[chat.title]', {
+    source,
+    sessionId,
+    before: before || '',
+    after: after || '',
+    ...detail,
+  })
+}
+
+function logActiveBinding(source: string, detail: Record<string, unknown>) {
+  console.info('[chat.active]', detail.source ? detail : { source, ...detail })
+}
+
 
 
 
@@ -351,6 +366,7 @@ export const useChatStore = defineStore('chat', () => {
   const liveBranchesBySession = ref<Record<string, ConversationBranch[]>>({})
   const subagentActivityBySession = ref<Record<string, Record<string, ConversationMessage[]>>>({})
   const compressionBySession = ref<Record<string, CompressionState>>({})
+  let latestSwitchRequestId = 0
   const approvalPollers = new Map<string, ReturnType<typeof setInterval>>()
   const clarifyPollers = new Map<string, ReturnType<typeof setInterval>>()
   const compressionNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -536,6 +552,7 @@ export const useChatStore = defineStore('chat', () => {
     const preserveActiveHydratedMessages = activeSessionId.value === existing.id
       && branch.source !== 'subagent'
       && hasRealBranchMessageContent(existing.messages)
+    logTitleMutation('branch.sync', existing.id, existing.title, nextSession.title, { rootSessionId, branchId: branch.session_id })
     existing.title = nextSession.title
     existing.source = nextSession.source
     existing.model = nextSession.model
@@ -673,7 +690,10 @@ export const useChatStore = defineStore('chat', () => {
         if (branchId === activeSessionId.value) persistActiveMessages()
       }
       applySessionDetail(target, detail)
-      if (detail.title) target.title = detail.title
+      if (detail.title) {
+        logTitleMutation('branch.detail', target.id, target.title, detail.title, { rootSessionId, branchId })
+        target.title = detail.title
+      }
     } catch {
       // Active branch hydration is best-effort; the parent run stream continues.
     }
@@ -1408,11 +1428,17 @@ export const useChatStore = defineStore('chat', () => {
         const hasBetterToolDetails = serverHasBetterToolDetails(local, mapped)
         if (serverIsAhead) {
           target.messages = withLocalSteeredMessages(mergeServerToolDetails(mapped, target.messages), target.messages)
-          if (detail.title && !target.title) target.title = detail.title
+          if (detail.title && !target.title) {
+            logTitleMutation('poll.detail.empty-title', target.id, target.title, detail.title, { sid })
+            target.title = detail.title
+          }
           if (sid === activeSessionId.value) persistActiveMessages()
         } else if (hasBetterToolDetails) {
           target.messages = mergeServerToolDetails(target.messages, mapped)
-          if (detail.title && !target.title) target.title = detail.title
+          if (detail.title && !target.title) {
+            logTitleMutation('poll.detail.empty-title', target.id, target.title, detail.title, { sid })
+            target.title = detail.title
+          }
           if (sid === activeSessionId.value) persistActiveMessages()
         }
         void refreshSessionBranches(rootSessionIdFor(sid))
@@ -1442,11 +1468,17 @@ export const useChatStore = defineStore('chat', () => {
               // retreating local state; otherwise commit the server view.
               if (serverIsAhead) {
                 target.messages = withLocalSteeredMessages(mergeServerToolDetails(mapped, target.messages), target.messages)
-                if (detail.title) target.title = detail.title
+                if (detail.title) {
+                  logTitleMutation('poll.detail.stable-exit', target.id, target.title, detail.title, { sid })
+                  target.title = detail.title
+                }
                 if (sid === activeSessionId.value) persistActiveMessages()
               } else if (hasBetterToolDetails) {
                 target.messages = mergeServerToolDetails(target.messages, mapped)
-                if (detail.title) target.title = detail.title
+                if (detail.title) {
+                  logTitleMutation('poll.detail.stable-exit', target.id, target.title, detail.title, { sid })
+                  target.title = detail.title
+                }
                 if (sid === activeSessionId.value) persistActiveMessages()
               }
               clearInFlight(sid)
@@ -1465,6 +1497,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function loadSessions() {
     isLoadingSessions.value = true
+    const switchRequestIdAtLoadStart = latestSwitchRequestId
     try {
       // 从 profile 对应的缓存中恢复，实现 instant render
       const cachedSessions = (loadJsonWithFallback<Session[]>(sessionsCacheKey(), legacySessionsCacheKey()) || [])
@@ -1653,9 +1686,23 @@ export const useChatStore = defineStore('chat', () => {
         representedTargetId: representedTarget?.id || null,
         targetId: targetId || null,
       })
-      if (targetId) {
+      if (targetId && latestSwitchRequestId === switchRequestIdAtLoadStart) {
+        logActiveBinding('loadSessions:rebind-before-switch', {
+          source: 'loadSessions:rebind-before-switch',
+          targetId,
+          beforeActiveSessionId: activeSessionId.value,
+          beforeActiveSessionObjId: activeSession.value?.id || null,
+          beforeActiveTitle: activeSession.value?.title || '',
+        })
         activeSessionId.value = targetId
         activeSession.value = sessions.value.find(session => session.id === targetId) || null
+        logActiveBinding('loadSessions:rebind-after-lookup', {
+          source: 'loadSessions:rebind-after-lookup',
+          targetId,
+          afterActiveSessionId: activeSessionId.value,
+          afterActiveSessionObjId: activeSession.value?.id || null,
+          afterActiveTitle: activeSession.value?.title || '',
+        })
         await switchSession(targetId)
       }
     } catch (err) {
@@ -1673,8 +1720,15 @@ export const useChatStore = defineStore('chat', () => {
   async function refreshActiveSession(): Promise<boolean> {
     const sid = activeSessionId.value
     if (!sid) return false
+    logActiveBinding('refreshActiveSession:start', {
+      source: 'refreshActiveSession:start',
+      sid,
+      activeSessionObjId: activeSession.value?.id || null,
+      activeTitle: activeSession.value?.title || '',
+    })
     try {
       const detail = await fetchResolvedSessionDetail(sid)
+      if (activeSessionId.value !== sid || activeSession.value?.id !== sid) return false
       if (!detail) return false
       const target = sessions.value.find(s => s.id === sid)
       if (!target) return false
@@ -1704,6 +1758,7 @@ export const useChatStore = defineStore('chat', () => {
         startClarifyPolling(sid)
       } else {
         const pendingState = await getPendingApproval(sid)
+        if (activeSessionId.value !== sid || activeSession.value?.id !== sid) return false
         if (pendingState.pending) {
           setApprovalPending(sid, {
             ...pendingState.pending,
@@ -1714,7 +1769,18 @@ export const useChatStore = defineStore('chat', () => {
         }
         clearClarify(sid)
       }
-      if (detail.title) target.title = detail.title
+      if (detail.title) {
+        logTitleMutation('refreshActiveSession.detail', target.id, target.title, detail.title, { sid })
+        target.title = detail.title
+      }
+      logActiveBinding('refreshActiveSession:end', {
+        source: 'refreshActiveSession:end',
+        sid,
+        activeSessionObjId: activeSession.value?.id || null,
+        activeTitle: activeSession.value?.title || '',
+        targetObjId: target.id,
+        targetTitle: target.title || '',
+      })
       return true
     } catch (err) {
       console.error('Failed to refresh active session:', err)
@@ -2048,7 +2114,15 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function switchSession(sessionId: string, focusId?: string | null, prefetchedDetail: SessionDetail | null = null, toolDetailsPreMerged = false) {
+    const switchRequestId = ++latestSwitchRequestId
     const previousSessionId = activeSessionId.value
+    logActiveBinding('switchSession:start', {
+      source: 'switchSession:start',
+      sessionId,
+      previousSessionId,
+      previousActiveObjId: activeSession.value?.id || null,
+      previousActiveTitle: activeSession.value?.title || '',
+    })
     clearThinkingObservationFor(sessionId)
     activeSessionId.value = sessionId
     focusMessageId.value = focusId ?? null
@@ -2056,28 +2130,36 @@ export const useChatStore = defineStore('chat', () => {
     const legacyActiveKey = legacyStorageKey()
     if (legacyActiveKey) removeItem(legacyActiveKey)
     activeSession.value = sessions.value.find(s => s.id === sessionId) || null
+    const targetSession = activeSession.value
+    logActiveBinding('switchSession:set-active', {
+      source: 'switchSession:set-active',
+      sessionId,
+      activeSessionId: activeSessionId.value,
+      activeSessionObjId: activeSession.value?.id || null,
+      activeTitle: activeSession.value?.title || '',
+    })
 
-    if (!activeSession.value) return
+    if (!targetSession) return
 
     // Hydrate messages from localStorage cache first (instant render), then
     // revalidate from server in the background. If no cache exists, show the
     // loading state while we fetch.
-    const hasLocalMessages = activeSession.value.messages.length > 0
+    const hasLocalMessages = targetSession.messages.length > 0
     if (!hasLocalMessages) {
       const cachedMsgs = loadJsonWithFallback<Message[]>(msgsCacheKey(sessionId), legacyMsgsCacheKey(sessionId))
       if (cachedMsgs?.length) {
-        activeSession.value.messages = reapplySteerHistory(sessionId, scrubBuggyReasoningInCache(cachedMsgs))
+        targetSession.messages = reapplySteerHistory(sessionId, scrubBuggyReasoningInCache(cachedMsgs))
       }
     }
 
-    const needsBlockingLoad = activeSession.value.messages.length === 0
+    const needsBlockingLoad = targetSession.messages.length === 0
     if (needsBlockingLoad) isLoadingMessages.value = true
 
     try {
       const detail = prefetchedDetail ?? await fetchResolvedSessionDetail(sessionId)
-      if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
+      if (switchRequestId !== latestSwitchRequestId || activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId || targetSession.id !== sessionId) return
       if (detail && detail.messages) {
-        if (isBridgeFallbackSession(detail) && activeSession.value.messages.length > 0) return
+        if (isBridgeFallbackSession(detail) && targetSession.messages.length > 0) return
         const mapped = reapplySteerHistory(sessionId, mapHermesMessages(detail.messages))
         // When switching to a different session, accept the server's messages
         // — but NOT if the target session has a live stream or a resuming run.
@@ -2086,14 +2168,14 @@ export const useChatStore = defineStore('chat', () => {
         // The active SSE stream or polling will keep messages current.
         const switchingSessions = previousSessionId !== sessionId
         const targetHasActiveStream = streamStates.value.has(sessionId) || resumingRuns.value.has(sessionId)
-        const local = activeSession.value.messages
+        const local = targetSession.messages
         if (targetHasActiveStream) {
           // Only merge tool detail enrichment from the server; never overwrite
           // streaming content or queued/steered user messages.
           if (serverHasBetterToolDetails(local, mapped)) {
-            const nextMessages = mergeServerToolDetails(activeSession.value.messages, mapped)
-            if (!messagesEquivalent(activeSession.value.messages, nextMessages)) {
-              activeSession.value.messages = nextMessages
+            const nextMessages = mergeServerToolDetails(targetSession.messages, mapped)
+            if (!messagesEquivalent(targetSession.messages, nextMessages)) {
+              targetSession.messages = nextMessages
             }
           }
         } else if (switchingSessions) {
@@ -2104,30 +2186,31 @@ export const useChatStore = defineStore('chat', () => {
           // Exception: switchBranchSession sets toolDetailsPreMerged=true
           // because it already merged tool details into the session.
           const base = toolDetailsPreMerged
-            ? activeSession.value.messages  // Already merged — keep as-is
+            ? targetSession.messages  // Already merged — keep as-is
             : mapped
-          const nextMessages = withLocalSteeredMessages(base, activeSession.value.messages)
-          if (!messagesEquivalent(activeSession.value.messages, nextMessages)) {
-            activeSession.value.messages = nextMessages
+          const nextMessages = withLocalSteeredMessages(base, targetSession.messages)
+          if (!messagesEquivalent(targetSession.messages, nextMessages)) {
+            targetSession.messages = nextMessages
           }
         } else if (compareServerMessages(local, mapped).serverIsAhead) {
-          const nextMessages = withLocalSteeredMessages(mergeServerToolDetails(mapped, activeSession.value.messages), activeSession.value.messages)
-          if (!messagesEquivalent(activeSession.value.messages, nextMessages)) {
-            activeSession.value.messages = nextMessages
+          const nextMessages = withLocalSteeredMessages(mergeServerToolDetails(mapped, targetSession.messages), targetSession.messages)
+          if (!messagesEquivalent(targetSession.messages, nextMessages)) {
+            targetSession.messages = nextMessages
           }
         } else if (serverHasBetterToolDetails(local, mapped)) {
-          const nextMessages = mergeServerToolDetails(activeSession.value.messages, mapped)
-          if (!messagesEquivalent(activeSession.value.messages, nextMessages)) {
-            activeSession.value.messages = nextMessages
+          const nextMessages = mergeServerToolDetails(targetSession.messages, mapped)
+          if (!messagesEquivalent(targetSession.messages, nextMessages)) {
+            targetSession.messages = nextMessages
           }
         }
         void refreshSessionBranches(rootSessionIdFor(sessionId))
         if (isSessionLive(sessionId) || readInFlight(sessionId)) {
-          syncApprovalFromMessages(sessionId, activeSession.value.messages)
+          syncApprovalFromMessages(sessionId, targetSession.messages)
           void pollClarifyOnce(sessionId)
           startClarifyPolling(sessionId)
         } else {
           const pendingState = await getPendingApproval(sessionId)
+          if (switchRequestId !== latestSwitchRequestId || activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId || targetSession.id !== sessionId) return
           if (pendingState.pending) {
             setApprovalPending(sessionId, {
               ...pendingState.pending,
@@ -2140,15 +2223,34 @@ export const useChatStore = defineStore('chat', () => {
         }
         // Update title: use Hermes title, or fallback to first user message
         if (detail.title) {
-          activeSession.value.title = detail.title
-        } else if (!activeSession.value.title) {
-          const firstUser = (activeSession.value.messages).find(m => m.role === 'user' && !m.steered)
+          console.info('[chat.switchSession.detail]', {
+            requestedSessionId: sessionId,
+            detailId: detail.id,
+            detailTitle: detail.title,
+            activeSessionIdNow: activeSessionId.value,
+            activeSessionObjIdNow: activeSession.value?.id || null,
+            beforeTitle: targetSession.title || '',
+            afterTitle: detail.title,
+          })
+          logTitleMutation('switchSession.detail', targetSession.id, targetSession.title, detail.title, { sessionId })
+          targetSession.title = detail.title
+        } else if (!targetSession.title) {
+          const firstUser = (targetSession.messages).find(m => m.role === 'user' && !m.steered)
           if (firstUser) {
             const t = firstUser.content.slice(0, 40)
-            activeSession.value.title = t + (firstUser.content.length > 40 ? '...' : '')
+            const nextTitle = t + (firstUser.content.length > 40 ? '...' : '')
+            logTitleMutation('switchSession.fallback-first-user', targetSession.id, targetSession.title, nextTitle, { sessionId })
+            targetSession.title = nextTitle
           }
         }
-        applySessionDetail(activeSession.value, detail)
+        applySessionDetail(targetSession, detail)
+        logActiveBinding('switchSession:after-detail', {
+          source: 'switchSession:after-detail',
+          sessionId,
+          activeSessionId: activeSessionId.value,
+          activeSessionObjId: activeSession.value?.id || null,
+          activeTitle: targetSession.title || '',
+        })
         persistActiveMessages()
       }
     } catch (err) {
@@ -2160,7 +2262,7 @@ export const useChatStore = defineStore('chat', () => {
     // tmux-like resume: if this session has a recent in-flight run and we're
     // not currently streaming, start polling fetchSession to pick up progress
     // that happened while we were gone. Exits automatically on stability.
-    if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
+    if (switchRequestId !== latestSwitchRequestId || activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
     if (readInFlight(sessionId) && !streamStates.value.has(sessionId)) {
       // If the server already shows this session as ended, the in-flight
       // record is stale — clear it and skip resume to avoid blocking the UI.
@@ -2178,7 +2280,7 @@ export const useChatStore = defineStore('chat', () => {
     // Fetch token usage for this session from web-ui DB
     try {
       const usage = await fetchSessionUsageSingle(sessionId)
-      if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
+      if (switchRequestId !== latestSwitchRequestId || activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
       applySessionUsage(activeSession.value, usage)
     } catch { /* non-critical */ }
   }
@@ -2268,7 +2370,9 @@ export const useChatStore = defineStore('chat', () => {
         const title = firstUser.attachments?.length
           ? firstUser.attachments.map(a => a.name).join(', ')
           : firstUser.content
-        target.title = title.slice(0, 40) + (title.length > 40 ? '...' : '')
+        const nextTitle = title.slice(0, 40) + (title.length > 40 ? '...' : '')
+        logTitleMutation('updateSessionTitle', target.id, target.title, nextTitle, { sessionId })
+        target.title = nextTitle
       }
     }
     target.updatedAt = Date.now()
