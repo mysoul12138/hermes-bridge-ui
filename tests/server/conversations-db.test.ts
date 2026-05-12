@@ -140,7 +140,7 @@ describe('conversation DB service', () => {
     if (profileDirState.value) rmSync(profileDirState.value, { recursive: true, force: true })
   })
 
-  it('folds parentless bridge context continuations into the latest continuation conversation', async () => {
+  it('folds parentless bridge context continuations back into the root conversation', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
@@ -232,20 +232,18 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['cont-2'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
 
-    const detail = await mod.getConversationDetailFromDb('cont-2', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.content)).toEqual(['continue two', 'continuation two answer'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['cont-1'])
-    expect(detail?.branches?.[0]?.messages.map((message: any) => message.content)).toEqual([
-      'continue one',
-      'continuation one answer',
-    ])
-    expect(detail?.branches?.[0]?.branches?.map((branch: any) => branch.session_id)).toEqual(['root'])
-    expect(detail?.branches?.[0]?.branches?.[0]?.messages.map((message: any) => message.content)).toEqual([
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
       'root request',
       'root answer',
+      'continue one',
+      'continuation one answer',
+      'continue two',
+      'continuation two answer',
     ])
+    expect(detail?.branches || []).toEqual([])
   })
 
   it('does not fold adjacent bridge context sessions when the child context references different history', async () => {
@@ -392,10 +390,10 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['continuation'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
     expect(summaries[0]?.branch_session_count).toBe(0)
 
-    const detail = await mod.getConversationDetailFromDb('continuation', { humanOnly: true })
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
     expect(detail?.branch_session_count).toBe(0)
     expect(detail?.branches || []).toEqual([])
   })
@@ -459,31 +457,25 @@ describe('conversation DB service', () => {
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
     expect(summaries).toHaveLength(1)
     expect(summaries[0]).toEqual(expect.objectContaining({
-      id: 'root-cont',
-      title: 'Continuation',
-      started_at: 110,
-      thread_session_count: 1,
-      branch_session_count: 1,
+      id: 'root',
+      started_at: 100,
+      thread_session_count: 2,
+      branch_session_count: 0,
       ended_at: 111,
-      cost_status: 'final',
-      actual_cost_usd: 0.2,
+      cost_status: 'mixed',
+      actual_cost_usd: 0.30000000000000004,
     }))
 
-    const detailFromTip = await mod.getConversationDetailFromDb('root-cont', { humanOnly: true })
-    expect(detailFromTip?.session_id).toBe('root-cont')
-    expect(detailFromTip?.thread_session_count).toBe(1)
-    expect(detailFromTip?.messages.map((message: any) => message.content)).toEqual([
+    const detailFromRoot = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detailFromRoot?.session_id).toBe('root')
+    expect(detailFromRoot?.thread_session_count).toBe(2)
+    expect(detailFromRoot?.messages.map((message: any) => message.content)).toEqual([
+      'Start here',
+      'Assistant reply',
       'Continue with more detail',
       'Continued answer',
     ])
-    expect(detailFromTip?.branches?.map((branch: any) => branch.session_id)).toEqual(['root'])
-    expect(detailFromTip?.branches?.[0]?.messages.map((message: any) => message.content)).toEqual([
-      'Start here',
-      'Assistant reply',
-    ])
-
-    const detailFromRoot = await mod.getConversationDetailFromDb('root', { humanOnly: true })
-    expect(detailFromRoot).toBeNull()
+    expect(detailFromRoot?.branches ?? []).toEqual([])
   })
 
   it('aggregates an orphan continuation without showing it as a separate conversation', async () => {
@@ -541,18 +533,18 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['orphan-cont'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
     expect(summaries[0]).toMatchObject({
-      started_at: 111,
-      thread_session_count: 1,
-      branch_session_count: 1,
+      started_at: 100,
+      thread_session_count: 2,
+      branch_session_count: 0,
       input_tokens: 3,
       output_tokens: 4,
     })
 
-    const detail = await mod.getConversationDetailFromDb('orphan-cont', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['orphan-cont'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['root'])
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['root', 'orphan-cont'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
   it('aggregates a delayed orphan continuation when the visible content is duplicated', async () => {
@@ -610,16 +602,16 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['duplicate-cont'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
     expect(summaries[0]).toMatchObject({
-      started_at: 200,
-      thread_session_count: 1,
-      branch_session_count: 1,
+      started_at: 100,
+      thread_session_count: 2,
+      branch_session_count: 0,
     })
 
-    const detail = await mod.getConversationDetailFromDb('duplicate-cont', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['duplicate-cont'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['root'])
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['root', 'duplicate-cont'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
   it('folds bridge context prompt duplicates into compressed TUI conversation branches', async () => {
@@ -705,17 +697,17 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['tip'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
     expect(summaries[0]).toMatchObject({
-      thread_session_count: 1,
-      branch_session_count: 2,
+      thread_session_count: 2,
+      branch_session_count: 0,
       input_tokens: 3,
       output_tokens: 4,
     })
 
-    const detail = await mod.getConversationDetailFromDb('tip', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['tip'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['root', 'bridge-duplicate'])
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['root', 'tip', 'bridge-duplicate'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
   it('folds parentless bridge context sessions into existing branch placeholders', async () => {
@@ -801,24 +793,18 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['context-continuation'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
 
     const rootDetail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
-    expect(rootDetail).toBeNull()
-
-    const detail = await mod.getConversationDetailFromDb('context-continuation', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.content)).toEqual(['continue branch'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['branch-placeholder'])
-    expect(detail?.branches?.[0]?.messages.map((message: any) => message.content)).toEqual([
-      'branch work before compaction',
-    ])
-    expect(detail?.branches?.[0]?.branches?.map((branch: any) => branch.session_id)).toEqual(['root'])
-    expect(detail?.branches?.[0]?.branches?.[0]?.messages.map((message: any) => message.content)).toEqual([
+    expect(rootDetail?.messages.map((message: any) => message.content)).toEqual([
       'root request',
+      'branch work before compaction',
+      'continue branch',
     ])
+    expect(rootDetail?.branches ?? []).toEqual([])
   })
 
-  it('treats branched children as their own visible conversations', async () => {
+  it('folds branched children back into the root conversation', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
@@ -874,10 +860,11 @@ describe('conversation DB service', () => {
 
     const mod = await import('../../packages/server/src/db/hermes/conversations-db')
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
-    expect(summaries.map((summary: any) => summary.id)).toEqual(['branch-child', 'root'])
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
 
-    const detail = await mod.getConversationDetailFromDb('branch-child', { humanOnly: true })
-    expect(detail?.messages.map((message: any) => message.content)).toEqual(['Branch prompt', 'Branch answer'])
+    const detail = await mod.getConversationDetailFromDb('root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual(['Root prompt', 'Branch prompt', 'Branch answer'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
   it('does not expose active child tui branches as top-level conversations', async () => {
@@ -940,7 +927,7 @@ describe('conversation DB service', () => {
     expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
   })
 
-  it('keeps non-compression child sessions visible instead of hiding them under their parent', async () => {
+  it('folds non-branch child sessions into their parent conversation', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
@@ -998,8 +985,9 @@ describe('conversation DB service', () => {
     const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
     expect(summaries.map((summary: any) => summary.id)).toEqual(['parent'])
 
-    const detail = await mod.getConversationDetailFromDb('review-child', { humanOnly: true })
-    expect(detail).toBeNull()
+    const detail = await mod.getConversationDetailFromDb('parent', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual(['Parent prompt', 'Review prompt', 'Review answer'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
   it('excludes synthetic-only roots from human-only summaries and details', async () => {

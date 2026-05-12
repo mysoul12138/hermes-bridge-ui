@@ -363,6 +363,12 @@ function isBranchRoot(session: ConversationSession | undefined, byId: Map<string
   return !!parent && parent.end_reason === 'branched' && timingMatchesParent(parent, session)
 }
 
+function isRealConversationBranch(session: ConversationSession | undefined, byId: Map<string, ConversationSession>): boolean {
+  if (!session || session.source === 'tool') return false
+  if (session.source === 'subagent') return true
+  return isBranchRoot(session, byId)
+}
+
 function isVisibleRoot(session: ConversationSession | undefined, byId: Map<string, ConversationSession>): boolean {
   if (!session || session.source === 'tool') return false
   return (session.parent_session_id == null || isBranchRoot(session, byId)) && !isCompressionLineageChild(session, byId)
@@ -502,7 +508,7 @@ function collectBranchRoots(chain: ConversationSession[], byId: Map<string, Conv
     for (const childId of childIds) {
       if (chainIds.has(childId) || childId === continuation?.id) continue
       const child = byId.get(childId)
-      if (child) roots.push(child)
+      if (isRealConversationBranch(child, byId)) roots.push(child)
     }
   }
   return roots.sort((a, b) => {
