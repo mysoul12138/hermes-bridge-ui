@@ -2073,6 +2073,7 @@ export const useChatStore = defineStore('chat', () => {
 
     try {
       const detail = prefetchedDetail ?? await fetchResolvedSessionDetail(sessionId)
+      if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
       if (detail && detail.messages) {
         if (isBridgeFallbackSession(detail) && activeSession.value.messages.length > 0) return
         const mapped = reapplySteerHistory(sessionId, mapHermesMessages(detail.messages))
@@ -2157,6 +2158,7 @@ export const useChatStore = defineStore('chat', () => {
     // tmux-like resume: if this session has a recent in-flight run and we're
     // not currently streaming, start polling fetchSession to pick up progress
     // that happened while we were gone. Exits automatically on stability.
+    if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
     if (readInFlight(sessionId) && !streamStates.value.has(sessionId)) {
       // If the server already shows this session as ended, the in-flight
       // record is stale — clear it and skip resume to avoid blocking the UI.
@@ -2174,6 +2176,7 @@ export const useChatStore = defineStore('chat', () => {
     // Fetch token usage for this session from web-ui DB
     try {
       const usage = await fetchSessionUsageSingle(sessionId)
+      if (activeSessionId.value !== sessionId || activeSession.value?.id !== sessionId) return
       applySessionUsage(activeSession.value, usage)
     } catch { /* non-critical */ }
   }

@@ -1790,6 +1790,98 @@ describe('Chat Store', () => {
     expect(window.localStorage.getItem(`hermes_bridge_persistent_session_v1_default_${localBridgeSessionId}`)).toBe(persistentSessionId)
   })
 
+  it('does not let a slower previous session detail overwrite the active session title', async () => {
+    const slowId = 'slow-session'
+    const fastId = 'fast-session'
+
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, fastId)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
+      { id: slowId, title: 'Slow Cached', source: 'tui', messages: [], createdAt: 1, updatedAt: 1 },
+      { id: fastId, title: 'Fast Cached', source: 'tui', messages: [], createdAt: 2, updatedAt: 2 },
+    ]))
+
+    let resolveSlow: ((value: any) => void) | null = null
+    let resolveFast: ((value: any) => void) | null = null
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(slowId, 'Slow Server', { source: 'tui' }),
+      makeSummary(fastId, 'Fast Server', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockImplementation((id: string) => {
+      if (id === slowId) {
+        return new Promise(resolve => {
+          resolveSlow = resolve
+        }) as any
+      }
+      if (id === fastId) {
+        return new Promise(resolve => {
+          resolveFast = resolve
+        }) as any
+      }
+      return Promise.resolve(null) as any
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    const slowSwitch = store.switchSession(slowId)
+    const fastSwitch = store.switchSession(fastId)
+
+    resolveFast?.(makeDetail(fastId, [{ id: 'u2', role: 'user', content: 'fast', timestamp: 2 }]))
+    resolveSlow?.(makeDetail(slowId, [{ id: 'u1', role: 'user', content: 'slow', timestamp: 1 }]))
+    await Promise.all([slowSwitch, fastSwitch])
+    await flushPromises()
+
+    expect(store.activeSessionId).toBe(fastId)
+    expect(store.activeSession?.title).toBe('Fast Server')
+  })
+
+  it('does not replay steer history from a slower previous session into the newly active session', async () => {
+    const oldId = '20260511_183658_f5976a'
+    const newId = '20260512_140104_229161'
+
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, newId)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
+      { id: oldId, title: 'Old Session', source: 'tui', messages: [], createdAt: 1, updatedAt: 1 },
+      { id: newId, title: 'New Session', source: 'tui', messages: [], createdAt: 2, updatedAt: 2 },
+    ]))
+    window.localStorage.setItem(`hermes_steer_history_v1_default_${oldId}`, JSON.stringify([
+      { content: '/steer from old', timestamp: 1000, previousMessageId: 'old-a1' },
+    ]))
+
+    let resolveOld: ((value: any) => void) | null = null
+    let resolveNew: ((value: any) => void) | null = null
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(oldId, 'Old Session', { source: 'tui' }),
+      makeSummary(newId, 'New Session', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockImplementation((id: string) => {
+      if (id === oldId) {
+        return new Promise(resolve => {
+          resolveOld = resolve
+        }) as any
+      }
+      if (id === newId) {
+        return new Promise(resolve => {
+          resolveNew = resolve
+        }) as any
+      }
+      return Promise.resolve(null) as any
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    const oldSwitch = store.switchSession(oldId)
+    const newSwitch = store.switchSession(newId)
+
+    resolveNew?.(makeDetail(newId, [{ id: 'new-u1', role: 'user', content: 'new content', timestamp: 2 }]))
+    resolveOld?.(makeDetail(oldId, [{ id: 'old-a1', role: 'assistant', content: 'old assistant', timestamp: 1 }]))
+    await Promise.all([oldSwitch, newSwitch])
+    await flushPromises()
+
+    expect(store.activeSessionId).toBe(newId)
+    expect(store.messages.some(message => message.content === '/steer from old')).toBe(false)
+    expect(store.messages.map(message => message.id)).toEqual(['new-u1'])
+  })
+
   it('keeps a bridged branch session attached to its root after refresh', async () => {
     const rootId = 'root-session'
     const localBranchId = 'local-branch'
