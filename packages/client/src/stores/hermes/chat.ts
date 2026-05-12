@@ -1447,6 +1447,7 @@ export const useChatStore = defineStore('chat', () => {
       const cachedBranchMetaIndex = loadBranchSessionMetaIndex()
       if (cachedSessions.length) {
         cachedSessions.forEach(session => {
+          session.messages = reapplySteerHistory(session.id, scrubBuggyReasoningInCache(session.messages || []))
           applyBranchMeta(session, cachedBranchMetaIndex[session.id], cachedSessions, true)
           applySessionModelOverride(session)
         })
@@ -2038,7 +2039,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!hasLocalMessages) {
       const cachedMsgs = loadJsonWithFallback<Message[]>(msgsCacheKey(sessionId), legacyMsgsCacheKey(sessionId))
       if (cachedMsgs?.length) {
-        activeSession.value.messages = scrubBuggyReasoningInCache(cachedMsgs)
+        activeSession.value.messages = reapplySteerHistory(sessionId, scrubBuggyReasoningInCache(cachedMsgs))
       }
     }
 

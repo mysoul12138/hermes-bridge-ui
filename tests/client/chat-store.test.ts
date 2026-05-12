@@ -2370,7 +2370,9 @@ describe('Chat Store', () => {
     window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
       { content: 'adjust direction', timestamp: Date.now() - 1000 },
     ]))
-    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([])
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(sid, 'Steer History', { source: 'tui' }),
+    ])
     mockSessionsApi.fetchSession.mockResolvedValue({
       id: sid,
       source: 'tui',
@@ -2385,6 +2387,39 @@ describe('Chat Store', () => {
     await flushPromises()
 
     expect(store.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: 'adjust direction',
+          steered: true,
+        }),
+      ]),
+    )
+  })
+
+  it('hydrates steered badges from cache before the first session render', async () => {
+    const sid = 'cached-steer-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([{
+      id: sid,
+      title: 'Cached Steer',
+      source: 'tui',
+      messages: [
+        { id: 'u1', role: 'user', content: 'adjust direction', timestamp: Date.now() - 1000 },
+      ],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]))
+    window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
+      { content: 'adjust direction', timestamp: Date.now() - 1000 },
+    ]))
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([])
+    mockSessionsApi.fetchSession.mockResolvedValue(null)
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.activeSession?.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           role: 'user',
