@@ -401,20 +401,26 @@ export function withLocalSteeredMessages(mapped: Message[], current: Message[]):
     return !matchedLocalSteeredIds.has(message.id)
   })
   if (!localPreserved.length) return merged
-  // Insert each preserved message at the position matching its timestamp
-  // instead of appending all at the end
   const result = [...merged]
+  const anchorIds = new Set(result.map(message => message.id))
+  const currentIndexById = new Map(current.map((message, index) => [message.id, index] as const))
   for (const msg of localPreserved) {
-    const ts = msg.timestamp || 0
-    let insertIdx = result.length
-    for (let i = 0; i < result.length; i++) {
-      const msgTs = result[i].timestamp || 0
-      if (msgTs > ts) {
-        insertIdx = i
-        break
+    const currentIdx = currentIndexById.get(msg.id) ?? -1
+    let inserted = false
+    if (currentIdx >= 0) {
+      for (let i = currentIdx + 1; i < current.length; i += 1) {
+        const nextId = current[i]?.id
+        if (!nextId || !anchorIds.has(nextId)) continue
+        const insertIdx = result.findIndex(message => message.id === nextId)
+        if (insertIdx >= 0) {
+          result.splice(insertIdx, 0, msg)
+          inserted = true
+          break
+        }
       }
     }
-    result.splice(insertIdx, 0, msg)
+    if (!inserted) result.push(msg)
+    anchorIds.add(msg.id)
   }
   return result
 }
