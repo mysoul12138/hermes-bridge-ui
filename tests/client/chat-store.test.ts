@@ -2430,6 +2430,116 @@ describe('Chat Store', () => {
     )
   })
 
+  it('keeps a pending local steered bubble when switching sessions before the server records it', async () => {
+    const sid = 'steer-pending-session'
+    const otherSid = 'another-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, otherSid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
+      {
+        id: sid,
+        title: 'Pending Steer',
+        source: 'tui',
+        messages: [
+          { id: 'local-steer', role: 'user', content: 'adjust direction', timestamp: 1710000015000, steered: true },
+          { id: 'a1', role: 'assistant', content: 'working', timestamp: 1710000016000 },
+        ],
+        createdAt: 1710000010000,
+        updatedAt: 1710000016000,
+      },
+      {
+        id: otherSid,
+        title: 'Other',
+        source: 'tui',
+        messages: [],
+        createdAt: 1710000000000,
+        updatedAt: 1710000001000,
+      },
+    ]))
+    window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
+      { content: 'adjust direction', timestamp: 1710000015000 },
+    ]))
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(sid, 'Pending Steer', { source: 'tui' }),
+      makeSummary(otherSid, 'Other', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockImplementation(async (id: string) => {
+      if (id === sid) {
+        return {
+          id: sid,
+          source: 'tui',
+          title: 'Pending Steer',
+          messages: [
+            { id: 'a1', role: 'assistant', content: 'working', timestamp: 1710000016000 },
+          ],
+        } as any
+      }
+      if (id === otherSid) return makeDetail(otherSid, [])
+      return null
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.switchSession(sid)
+
+    expect(store.activeSession?.messages).toEqual([
+      expect.objectContaining({
+        id: 'local-steer',
+        role: 'user',
+        content: 'adjust direction',
+        steered: true,
+      }),
+      expect.objectContaining({
+        id: 'a1',
+        role: 'assistant',
+        content: 'working',
+      }),
+    ])
+  })
+
+  it('does not move a steer badge onto an older duplicate user message', async () => {
+    const sid = 'steer-duplicate-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([{
+      id: sid,
+      title: 'Duplicate Text',
+      source: 'tui',
+      messages: [],
+      createdAt: 1710000000000,
+      updatedAt: 1710000025000,
+    }]))
+    window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
+      { content: 'same text', timestamp: 1710000020000 },
+    ]))
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(sid, 'Duplicate Text', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockResolvedValue({
+      id: sid,
+      source: 'tui',
+      title: 'Duplicate Text',
+      messages: [
+        { id: 'u1', role: 'user', content: 'same text', timestamp: 1710000010 },
+        { id: 'u2', role: 'user', content: 'same text', timestamp: 1710000020 },
+      ],
+    } as any)
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.messages[0]).toMatchObject({
+      id: 'u1',
+      role: 'user',
+      content: 'same text',
+    })
+    expect(store.messages[0]).not.toHaveProperty('steered')
+    expect(store.messages[1]).toMatchObject({
+      id: 'u2',
+      role: 'user',
+      content: 'same text',
+      steered: true,
+    })
+  })
+
   it('keeps full branch detail when switching into a branch with equivalent fetched detail', async () => {
     const rootId = 'root-branch-equivalent'
     const branchId = 'branch-equivalent'
