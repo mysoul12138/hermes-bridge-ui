@@ -1654,6 +1654,8 @@ export const useChatStore = defineStore('chat', () => {
         targetId: targetId || null,
       })
       if (targetId) {
+        activeSessionId.value = targetId
+        activeSession.value = sessions.value.find(session => session.id === targetId) || null
         await switchSession(targetId)
       }
     } catch (err) {

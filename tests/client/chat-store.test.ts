@@ -1840,6 +1840,28 @@ describe('Chat Store', () => {
     expect(store.activeSession?.messages.map(message => message.id)).toEqual(['u2'])
   })
 
+  it('rebinds the active session object immediately after sessions list refresh', async () => {
+    const sid = 'active-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
+      { id: sid, title: 'Old Cached Title', source: 'tui', messages: [], createdAt: 1, updatedAt: 1 },
+    ]))
+
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(sid, 'Fresh Summary Title', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockResolvedValue({
+      ...makeDetail(sid, [{ id: 'u1', role: 'user', content: 'hello', timestamp: 1 }]),
+      title: '',
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.activeSessionId).toBe(sid)
+    expect(store.activeSession?.title).toBe('Fresh Summary Title')
+  })
+
   it('does not replay steer history from a slower previous session into the newly active session', async () => {
     const oldId = '20260511_183658_f5976a'
     const newId = '20260512_140104_229161'
