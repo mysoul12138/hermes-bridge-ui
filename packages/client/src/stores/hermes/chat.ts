@@ -2286,13 +2286,21 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const detail = await fetchConversationDetail(fetchId, { humanOnly: true })
       const branchCount = countBranchTree(detail.branches || [])
+      const existingSession = sessions.value.find(item => item.id === sid)
+      const previousBranchCount = existingSession?.branchSessionCount || 0
+      const shouldPreserveBranchMeta = previousBranchCount > 0 && branchCount === 0
+      const nextBranches = shouldPreserveBranchMeta
+        ? (dbBranchesBySession.value[sid] || [])
+        : (detail.branches || [])
       dbBranchesBySession.value = {
         ...dbBranchesBySession.value,
-        [sid]: detail.branches || [],
+        [sid]: nextBranches,
       }
-      persistBranchSessionMeta(sid, detail.branches || [])
+      persistBranchSessionMeta(sid, nextBranches)
       const session = sessions.value.find(item => item.id === sid)
-      if (session) session.branchSessionCount = branchCount
+      if (session) {
+        session.branchSessionCount = shouldPreserveBranchMeta ? previousBranchCount : branchCount
+      }
       syncBranchSessions(sid)
       promoteMergedSubagentBranchSessions(sid)
       reconcileBranchSessions(sid)

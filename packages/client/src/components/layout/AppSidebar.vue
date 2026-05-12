@@ -54,6 +54,11 @@ const showChangelog = ref(false);
 function openChangelog() {
   showChangelog.value = true;
 }
+
+function changelogLabel(key: string) {
+  const resolved = t(key)
+  return resolved === key ? key.replace(/^changelog\./, '') : resolved
+}
 </script>
 
 <template>
@@ -302,7 +307,7 @@ function openChangelog() {
             <span class="changelog-date">{{ entry.date }}</span>
           </div>
           <ul class="changelog-changes">
-            <li v-for="(change, idx) in entry.changes" :key="idx">{{ t(change) }}</li>
+            <li v-for="(change, idx) in entry.changes" :key="idx">{{ changelogLabel(change) }}</li>
           </ul>
         </div>
       </div>

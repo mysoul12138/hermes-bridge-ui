@@ -1,6 +1,6 @@
 import Router from '@koa/router'
 import type { Context } from 'koa'
-import { basename, extname } from 'path'
+import { basename, extname, isAbsolute } from 'path'
 import {
   createFileProvider,
   localProvider,
@@ -76,7 +76,7 @@ downloadRoutes.get('/api/hermes/download', async (ctx: Context) => {
   try {
     // Validate the path first
     // Support both absolute and relative paths
-    const validPath = filePath.startsWith('/') ? validatePath(filePath) : resolveHermesPath(filePath)
+    const validPath = isAbsolute(filePath) ? validatePath(filePath) : resolveHermesPath(filePath)
 
     // Choose provider: always use local for upload directory files
     let data: Buffer
