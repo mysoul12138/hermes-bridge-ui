@@ -263,7 +263,14 @@ function legacyInFlightKey(sid: string): string | null { return _legacyInFlightK
 function loadJson<T>(key: string): T | null { return _loadJson<T>(key) }
 function loadJsonWithFallback<T>(key: string, legacyKey?: string | null): T | null { return _loadJsonWithFallback<T>(key, legacyKey) }
 function readSteerHistory(sid: string): SteerHistoryEntry[] { return _readSteerHistory(getProfileName(), sid) }
-function appendSteerHistory(sid: string, content: string, timestamp: number) { return _appendSteerHistory(getProfileName(), sid, content, timestamp) }
+function appendSteerHistory(
+  sid: string,
+  content: string,
+  timestamp: number,
+  anchors?: { previousMessageId?: string, nextMessageId?: string },
+) {
+  return _appendSteerHistory(getProfileName(), sid, content, timestamp, anchors)
+}
 function saveJson(key: string, value: unknown) { _saveJson(key, value) }
 function saveJsonWithLegacy(key: string, value: unknown, legacyKey?: string | null) { _saveJsonWithLegacy(key, value, legacyKey) }
 function removeItem(key: string) { _removeItem(key) }
@@ -1046,6 +1053,8 @@ export const useChatStore = defineStore('chat', () => {
     const text = content.trim()
     const id = uid()
     const timestamp = Date.now()
+    const existingMessages = getSessionMsgs(sid)
+    const previousMessageId = existingMessages[existingMessages.length - 1]?.id
     const userMsg: Message = {
       id,
       role: 'user',
@@ -1055,7 +1064,7 @@ export const useChatStore = defineStore('chat', () => {
       steered: true,
     }
     addMessage(sid, userMsg)
-    appendSteerHistory(sid, text, timestamp)
+    appendSteerHistory(sid, text, timestamp, { previousMessageId })
     updateSessionTitle(sid)
     if (sid === activeSessionId.value) {
       persistActiveMessages()
@@ -1081,6 +1090,8 @@ export const useChatStore = defineStore('chat', () => {
       .map(entry => ({
         content: entry.content.trim(),
         timestamp: entry.timestamp || 0,
+        previousMessageId: entry.previousMessageId,
+        nextMessageId: entry.nextMessageId,
       }))
       .filter(entry => !!entry.content)
     if (!pendingEntries.length) return messages

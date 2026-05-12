@@ -2523,7 +2523,7 @@ describe('Chat Store', () => {
       },
     ]))
     window.localStorage.setItem(`hermes_steer_history_v1_default_${sid}`, JSON.stringify([
-      { content: 'adjust direction', timestamp: 1710000012000 },
+      { content: 'adjust direction', timestamp: 1710000012000, previousMessageId: 'a1' },
     ]))
     mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
       makeSummary(sid, 'Pending Steer After History', { source: 'tui' }),

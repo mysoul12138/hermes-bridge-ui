@@ -33,6 +33,8 @@ export interface SessionModelOverride {
 export interface SteerHistoryEntry {
   content: string
   timestamp: number
+  previousMessageId?: string
+  nextMessageId?: string
 }
 
 // ─── localStorage utilities ───────────────────────────────────────────
@@ -291,11 +293,22 @@ export function writeSteerHistory(profileName: string, sid: string, entries: Ste
   saveJson(steerHistoryKey(profileName, sid), entries)
 }
 
-export function appendSteerHistory(profileName: string, sid: string, content: string, timestamp: number) {
+export function appendSteerHistory(
+  profileName: string,
+  sid: string,
+  content: string,
+  timestamp: number,
+  anchors?: { previousMessageId?: string, nextMessageId?: string },
+) {
   const normalized = content.trim()
   if (!normalized) return
   const current = readSteerHistory(profileName, sid)
-  const next = [...current, { content: normalized, timestamp }]
+  const next = [...current, {
+    content: normalized,
+    timestamp,
+    previousMessageId: anchors?.previousMessageId,
+    nextMessageId: anchors?.nextMessageId,
+  }]
     .slice(-50)
   writeSteerHistory(profileName, sid, next)
 }

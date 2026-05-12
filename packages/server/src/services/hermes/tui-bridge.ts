@@ -118,6 +118,7 @@ interface RunState {
   pendingApproval?: boolean
   pendingClarify?: boolean
   contextInputTokens?: number
+  cancelRequestedAt?: number
 }
 
 interface BridgeSessionRef {
@@ -146,6 +147,8 @@ const STARTUP_TIMEOUT_MS = Math.max(5000, Number(process.env.HERMES_TUI_STARTUP_
 const REQUEST_TIMEOUT_MS = Math.max(30000, Number(process.env.HERMES_TUI_RPC_TIMEOUT_MS || 120000))
 const IDLE_HEARTBEAT_MS = Math.max(5000, Number(process.env.HERMES_TUI_IDLE_HEARTBEAT_MS || process.env.HERMES_TUI_IDLE_COMPLETE_MS || 15000))
 const COMPLETE_GRACE_MS = Math.max(250, Number(process.env.HERMES_TUI_COMPLETE_GRACE_MS || 1500))
+const CANCEL_STATUS_POLL_MS = Math.max(100, Number(process.env.HERMES_TUI_CANCEL_STATUS_POLL_MS || 250))
+const CANCEL_STATUS_TIMEOUT_MS = Math.max(1000, Number(process.env.HERMES_TUI_CANCEL_STATUS_TIMEOUT_MS || 5000))
 
 function resolveHermesHome(): string {
   return process.env.HERMES_HOME?.trim() || resolve(homedir(), '.hermes')
@@ -658,10 +661,15 @@ export class TuiBridgeService {
     state.pendingClarify = false
     clearLivePendingClarify(state.webSessionId)
     clearLivePendingClarifyForRun(runId)
+    state.cancelRequestedAt = Date.now()
 
     const result = await this.client.request('session.interrupt', {
       session_id: state.bridgeSessionId,
     })
+    const stopped = await this.waitForBridgeSessionStop(state.bridgeSessionId)
+    if (!stopped) {
+      return { ok: false, cancelled: false, bridge: true, status: 'interrupt_sent', result }
+    }
 
     this.push(runId, {
       event: 'run.completed',
@@ -1002,6 +1010,17 @@ export class TuiBridgeService {
       return null
     }
     return null
+  }
+
+  private async waitForBridgeSessionStop(bridgeSessionId: string, timeoutMs = CANCEL_STATUS_TIMEOUT_MS): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const running = await this.readBridgeSessionRunning(bridgeSessionId)
+      if (running === false) return true
+      if (running === null) return false
+      await new Promise(resolve => setTimeout(resolve, CANCEL_STATUS_POLL_MS))
+    }
+    return false
   }
 
   private completedEventWithUsage(state: RunState, event: BridgeRunEvent): BridgeRunEvent {
