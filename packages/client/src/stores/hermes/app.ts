@@ -26,6 +26,7 @@ export const useAppStore = defineStore('app', () => {
   const serverVersion = ref(WEB_UI_VERSION)
   const latestVersion = ref('')
   const updateAvailable = ref(false)
+  const clientOutdated = ref(false)
   const updating = ref(false)
   const modelGroups = ref<AvailableModelGroup[]>([])
   const selectedModel = ref('')
@@ -63,11 +64,13 @@ export const useAppStore = defineStore('app', () => {
       const res = await checkHealth()
       connected.value = res.status === 'ok'
       if (res.webui_version) serverVersion.value = res.webui_version
+      clientOutdated.value = !!res.webui_version && res.webui_version !== WEB_UI_VERSION
       if (res.webui_latest) latestVersion.value = res.webui_latest
       updateAvailable.value = !!res.webui_update_available
       if (res.node_version) nodeVersion.value = res.node_version
     } catch {
       connected.value = false
+      clientOutdated.value = false
     }
   }
 
@@ -235,6 +238,12 @@ export const useAppStore = defineStore('app', () => {
     sidebarOpen.value = !sidebarOpen.value
   }
 
+  function reloadClient() {
+    const url = new URL(window.location.href)
+    url.searchParams.set('__hwui_reload', Date.now().toString())
+    window.location.replace(url.toString())
+  }
+
   function closeSidebar() {
     sidebarOpen.value = false
   }
@@ -259,8 +268,10 @@ export const useAppStore = defineStore('app', () => {
     latestVersion,
     nodeVersion,
     updateAvailable,
+    clientOutdated,
     updating,
     doUpdate,
+    reloadClient,
     modelGroups,
     customModels,
     modelAliases,

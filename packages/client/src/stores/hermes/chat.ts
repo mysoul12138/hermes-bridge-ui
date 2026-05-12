@@ -2288,7 +2288,9 @@ export const useChatStore = defineStore('chat', () => {
       const branchCount = countBranchTree(detail.branches || [])
       const existingSession = sessions.value.find(item => item.id === sid)
       const previousBranchCount = existingSession?.branchSessionCount || 0
-      const shouldPreserveBranchMeta = previousBranchCount > 0 && branchCount === 0
+      const hadLoadedBranchStructure = countBranchTree(dbBranchesBySession.value[sid] || []) > 0
+        || countBranchTree(liveBranchesBySession.value[sid] || []) > 0
+      const shouldPreserveBranchMeta = hadLoadedBranchStructure && previousBranchCount > 0 && branchCount === 0
       const nextBranches = shouldPreserveBranchMeta
         ? (dbBranchesBySession.value[sid] || [])
         : (detail.branches || [])
