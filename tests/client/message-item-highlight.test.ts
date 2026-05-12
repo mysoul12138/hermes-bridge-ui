@@ -272,6 +272,26 @@ describe('MessageItem tool details', () => {
     expect(wrapper.find('.message-bubble--user-palette-5').exists()).toBe(true)
   })
 
+  it('keeps streaming assistant plain-text output in a wrapping pre block instead of clipping it', () => {
+    const content = '第一行很长很长很长很长很长很长很长很长很长很长\n第二行继续输出'
+    const wrapper = mount(MessageItem, {
+      props: {
+        message: {
+          id: 'assistant-streaming-plain',
+          role: 'assistant',
+          content,
+          isStreaming: true,
+          timestamp: Date.now(),
+        } satisfies Message,
+      },
+    })
+
+    const pre = wrapper.find('pre.message-stream-text')
+    expect(pre.exists()).toBe(true)
+    expect(pre.text()).toBe(content)
+    expect(pre.classes()).toContain('with-streaming-cursor')
+  })
+
   it('copies tool detail code through the delegated click handler', async () => {
     const writeText = vi.mocked(navigator.clipboard.writeText)
     const wrapper = mount(MessageItem, {

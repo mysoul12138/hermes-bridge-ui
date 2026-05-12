@@ -1282,11 +1282,17 @@ onBeforeUnmount(() => {
 
   .thinking-stream-text,
   .message-stream-text {
+    display: block;
     margin: 0;
-    white-space: pre-wrap;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: break-spaces;
     overflow-wrap: anywhere;
+    word-break: break-word;
     font: inherit;
     line-height: inherit;
+    box-sizing: border-box;
   }
 }
 
