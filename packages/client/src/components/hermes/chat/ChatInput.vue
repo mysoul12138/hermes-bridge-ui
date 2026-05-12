@@ -156,7 +156,14 @@ function handleAttachClick() {
 function handleFileChange(e: Event) {
   const input = e.target as HTMLInputElement
   if (!input.files) return
-  for (const file of input.files) addFile(file)
+  const files = Array.from(input.files)
+  const hasDirectoryLikeEntry = files.some(file => !file.type && file.size % 4096 === 0)
+  if (hasDirectoryLikeEntry) {
+    message.error('当前不支持直接上传文件夹，请先压缩后上传，或只选择文件。')
+    input.value = ''
+    return
+  }
+  for (const file of files) addFile(file)
   input.value = ''
 }
 
@@ -204,6 +211,12 @@ function handleDrop(e: DragEvent) {
   isDragging.value = false
   const files = Array.from(e.dataTransfer?.files || [])
   if (!files.length) return
+  const hasDirectoryLikeEntry = files.some(file => !file.type && file.size % 4096 === 0)
+  if (hasDirectoryLikeEntry) {
+    message.error('当前不支持直接上传文件夹，请先压缩后上传，或只选择文件。')
+    textareaRef.value?.focus()
+    return
+  }
   for (const file of files) addFile(file)
   textareaRef.value?.focus()
 }
