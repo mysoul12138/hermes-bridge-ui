@@ -15,6 +15,13 @@ vi.mock('@/api/hermes/system', () => mockSystemApi)
 
 import { useAppStore } from '@/stores/hermes/app'
 
+async function loadAppStoreWithVersion(version: string) {
+  vi.resetModules()
+  ;(globalThis as any).__APP_VERSION__ = version
+  const mod = await import('@/stores/hermes/app')
+  return mod.useAppStore()
+}
+
 describe('App Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -116,5 +123,39 @@ describe('App Store', () => {
     expect(store.updating).toBe(false)
     expect(consoleError).toHaveBeenCalledWith('Failed to update Hermes Web UI:', expect.any(Error))
     consoleError.mockRestore()
+  })
+
+  it('marks the client as outdated only when the server reports a newer version', async () => {
+    const store = await loadAppStoreWithVersion('0.5.17')
+
+    mockSystemApi.checkHealth.mockResolvedValueOnce({
+      status: 'ok',
+      webui_version: '0.5.16',
+      webui_latest: '0.5.16',
+      webui_update_available: false,
+    })
+    await store.checkConnection()
+    expect(store.serverVersion).toBe('0.5.16')
+    expect(store.clientOutdated).toBe(false)
+
+    mockSystemApi.checkHealth.mockResolvedValueOnce({
+      status: 'ok',
+      webui_version: '0.5.17',
+      webui_latest: '0.5.17',
+      webui_update_available: false,
+    })
+    await store.checkConnection()
+    expect(store.serverVersion).toBe('0.5.17')
+    expect(store.clientOutdated).toBe(false)
+
+    mockSystemApi.checkHealth.mockResolvedValueOnce({
+      status: 'ok',
+      webui_version: '0.5.18',
+      webui_latest: '0.5.18',
+      webui_update_available: true,
+    })
+    await store.checkConnection()
+    expect(store.serverVersion).toBe('0.5.18')
+    expect(store.clientOutdated).toBe(true)
   })
 })

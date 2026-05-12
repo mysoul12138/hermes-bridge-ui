@@ -8,6 +8,11 @@ locale.language = {
   'zh-TW': '繁體中文',
 }
 
+locale.sidebar = {
+  ...locale.sidebar,
+  reloadClientVersion: '更新到 v{version}',
+}
+
 locale.models = {
   ...locale.models,
   manageVisibleModels: '管理可見模型',
