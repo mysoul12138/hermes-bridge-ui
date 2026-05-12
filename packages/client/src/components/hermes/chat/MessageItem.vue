@@ -759,15 +759,15 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div v-if="thinkingExpanded" class="thinking-body">
-                  <pre v-if="renderThinkingAsPlainText" class="thinking-stream-text">{{ thinkingFullText }}</pre>
+                  <div v-if="renderThinkingAsPlainText" class="thinking-stream-text">{{ thinkingFullText }}</div>
                   <MarkdownRenderer v-else :content="thinkingFullText" />
                 </div>
               </div>
-              <pre
+              <div
                 v-if="renderBodyAsPlainText"
                 class="message-stream-text"
                 :class="{ 'with-streaming-cursor': showStreamingCursor }"
-              >{{ parsedThinking.body }}</pre>
+              >{{ parsedThinking.body }}</div>
               <MarkdownRenderer
                 v-else-if="parsedThinking.body"
                 :content="parsedThinking.body"
@@ -1284,10 +1284,11 @@ onBeforeUnmount(() => {
   .message-stream-text {
     display: block;
     margin: 0;
+    width: 100%;
     min-width: 0;
     max-width: 100%;
-    overflow-x: auto;
-    white-space: break-spaces;
+    overflow-x: hidden;
+    white-space: pre-line;
     overflow-wrap: anywhere;
     word-break: break-word;
     font: inherit;
