@@ -1461,6 +1461,53 @@ describe('Chat Store', () => {
     expect(store.messages.some(message => message.queued)).toBe(false)
   })
 
+  it('preserves the steered badge after server refresh returns the same user text', async () => {
+    const settings = useSettingsStore()
+    settings.display.busy_input_mode = 'steer'
+    settings.loaded = true
+    const sid = 'web-session'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([{
+      id: sid,
+      title: 'Running bridge session',
+      source: 'tui',
+      messages: [{ id: 'u1', role: 'user', content: 'start task', timestamp: Date.now() }],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]))
+    window.localStorage.setItem(bridgeLocalSessionKey(sid), '1')
+    window.localStorage.setItem(inFlightKey(sid), JSON.stringify({ runId: 'bridge_run_resumed', startedAt: Date.now() }))
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([])
+    mockSessionsApi.fetchSession.mockResolvedValue({
+      id: sid,
+      source: 'tui',
+      title: 'Running bridge session',
+      messages: [
+        { id: 'u1', role: 'user', content: 'start task', timestamp: Date.now() - 1000 },
+        { id: 'u2', role: 'user', content: 'adjust direction', timestamp: Date.now() },
+      ],
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await flushPromises()
+
+    await store.sendMessage('adjust direction')
+    await flushPromises()
+    await store.switchSession(sid)
+    await flushPromises()
+
+    expect(store.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'user',
+          content: 'adjust direction',
+          steered: true,
+        }),
+      ]),
+    )
+  })
+
   it('loads display settings before deciding whether busy input should steer', async () => {
     mockConfigApi.fetchConfig.mockResolvedValue({ display: { busy_input_mode: 'steer' } })
     const sid = 'web-session'

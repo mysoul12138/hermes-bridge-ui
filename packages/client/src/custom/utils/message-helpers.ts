@@ -358,14 +358,31 @@ export function compareServerMessages(local: Message[], server: Message[]) {
 
 export function withLocalSteeredMessages(mapped: Message[], current: Message[]): Message[] {
   const mappedUserTexts = new Set(mapped.filter(message => message.role === 'user').map(message => message.content.trim()).filter(Boolean))
+  const localSteeredByText = new Map(
+    current
+      .filter(message => message.role === 'user' && message.steered)
+      .map(message => [message.content.trim(), message] as const)
+      .filter(([text]) => !!text),
+  )
+
+  const merged = mapped.map(message => {
+    if (message.role !== 'user') return message
+    const localSteered = localSteeredByText.get(message.content.trim())
+    if (!localSteered) return message
+    return {
+      ...message,
+      steered: true,
+      attachments: message.attachments || localSteered.attachments,
+    }
+  })
   // Preserve both steered (in-run) and queued (waiting for next turn) user
   // messages that the server hasn't seen yet.  Without the queued check,
   // switching away from a session with pending queued messages would lose them.
   const localPreserved = current.filter(message => (message.steered || message.queued) && !mappedUserTexts.has(message.content.trim()))
-  if (!localPreserved.length) return mapped
+  if (!localPreserved.length) return merged
   // Insert each preserved message at the position matching its timestamp
   // instead of appending all at the end
-  const result = [...mapped]
+  const result = [...merged]
   for (const msg of localPreserved) {
     const ts = msg.timestamp || 0
     let insertIdx = result.length
