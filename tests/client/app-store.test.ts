@@ -27,6 +27,7 @@ describe('App Store', () => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
     window.localStorage.clear()
+    window.localStorage.setItem('hermes_api_key', 'test-token')
   })
 
   it('persists desktop sidebar collapsed state to localStorage', () => {
@@ -99,6 +100,7 @@ describe('App Store', () => {
       },
     })
     const store = useAppStore()
+    await store.loadModels()
 
     await store.setModelVisibility('deepseek', { mode: 'include', models: ['deepseek-reasoner'] })
 
