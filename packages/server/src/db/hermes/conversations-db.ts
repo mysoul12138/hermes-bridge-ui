@@ -484,30 +484,245 @@ function isBridgeContextBranchContinuationChild(session: ConversationSessionRow 
     && (isLikelyBridgeContextBranchContinuation(parent, session) || isLikelyBridgeContextRootContinuation(parent, session) || isLikelyExplicitContinuation(parent, session))
 }
 
-function bridgeContextHistoryPathToRoot(session: ConversationSessionRow, byId: Map<string, ConversationSessionRow>): ConversationSessionRow[] {
-  if (!isBridgeContextBranchContinuationChild(session, byId)) return []
+function findInferredBridgeContextParent(session: ConversationSessionRow, sessions: ConversationSessionRow[]): ConversationSessionRow | null {
+  if (session.source !== 'tui') return null
+  if (session.parent_session_id != null) return null
+  if (!isBridgeContextPrompt(session.raw_preview || session.preview || session.title)) return null
+
+  const sessionStarted = Number(session.started_at || 0)
+  const candidates = sessions
+    .filter(candidate => candidate.id !== session.id)
+    .filter(candidate => candidate.source === session.source)
+    .filter(candidate => candidate.source !== 'tool')
+    .filter(candidate => Number(candidate.started_at || 0) <= sessionStarted)
+    .filter(candidate => candidate.has_visible_messages || Number(candidate.tool_call_count || 0) > 0)
+    .filter(candidate => contextReferencesParent(candidate, session))
+    .sort((left, right) => {
+      const leftAnchor = Number(left.last_active || left.started_at || 0)
+      const rightAnchor = Number(right.last_active || right.started_at || 0)
+      if (rightAnchor !== leftAnchor) return rightAnchor - leftAnchor
+      if (right.started_at !== left.started_at) return right.started_at - left.started_at
+      return right.id.localeCompare(left.id)
+    })
+
+  return candidates[0] || null
+}
+
+function buildInferredBridgeContextParentMap(sessions: ConversationSessionRow[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const session of sessions) {
+    const parent = findInferredBridgeContextParent(session, sessions)
+    if (parent) map.set(session.id, parent.id)
+  }
+  return map
+}
+
+function buildInferredBridgeContextChildrenMap(inferredParents: Map<string, string>): Map<string, string[]> {
+  const children = new Map<string, string[]>()
+  for (const [childId, parentId] of inferredParents) {
+    const siblings = children.get(parentId) || []
+    siblings.push(childId)
+    children.set(parentId, siblings)
+  }
+  return children
+}
+
+function bridgeContextRootId(
+  sessionId: string,
+  byId: Map<string, ConversationSessionRow>,
+  inferredParents: Map<string, string>,
+): string | null {
+  let current = byId.get(sessionId) || null
+  if (!current) return null
+
+  const seen = new Set<string>()
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    const parent = directBridgeContextParent(current, byId, inferredParents)
+    if (!parent) return current.id
+    current = parent
+  }
+  return current?.id || null
+}
+
+function mergeChildrenByParent(
+  directChildren: Map<string | null, string[]>,
+  inferredChildren: Map<string, string[]>,
+): Map<string | null, string[]> {
+  const merged = new Map<string | null, string[]>()
+  for (const [parentId, childIds] of directChildren) {
+    merged.set(parentId, [...childIds])
+  }
+  for (const [parentId, childIds] of inferredChildren) {
+    const next = merged.get(parentId) || []
+    for (const childId of childIds) {
+      if (!next.includes(childId)) next.push(childId)
+    }
+    merged.set(parentId, next)
+  }
+  return merged
+}
+
+function isSubagentSession(session: ConversationSessionRow | undefined): boolean {
+  return !!session && session.source === 'subagent'
+}
+
+function effectiveParentId(session: ConversationSessionRow | undefined, inferredParents: Map<string, string>): string | null {
+  if (!session) return null
+  return session.parent_session_id ?? inferredParents.get(session.id) ?? null
+}
+
+function rootConversationIdForSession(
+  sessionId: string,
+  byId: Map<string, ConversationSessionRow>,
+  inferredParents: Map<string, string>,
+  memo = new Map<string, string | null>(),
+): string | null {
+  if (memo.has(sessionId)) return memo.get(sessionId) ?? null
+  const session = byId.get(sessionId)
+  if (!session || session.source === 'tool') {
+    memo.set(sessionId, null)
+    return null
+  }
+
+  const seen = new Set<string>()
+  let current: ConversationSessionRow | undefined = session
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    const parentId = effectiveParentId(current, inferredParents)
+    if (!parentId) {
+      memo.set(sessionId, current.id)
+      return current.id
+    }
+    const parent = byId.get(parentId)
+    if (!parent) {
+      memo.set(sessionId, current.id)
+      return current.id
+    }
+    current = parent
+  }
+
+  memo.set(sessionId, current?.id ?? session.id)
+  return current?.id ?? session.id
+}
+
+function mainlineSessionsForRoot(
+  rootId: string,
+  sessions: ConversationSessionRow[],
+  byId: Map<string, ConversationSessionRow>,
+  inferredParents: Map<string, string>,
+): ConversationSessionRow[] {
+  const memo = new Map<string, string | null>()
+  return sessions
+    .filter(session => session.source !== 'tool')
+    .filter(session => !isSubagentSession(session))
+    .filter(session => rootConversationIdForSession(session.id, byId, inferredParents, memo) === rootId)
+    .sort((left, right) => {
+      if (left.started_at !== right.started_at) return left.started_at - right.started_at
+      return left.id.localeCompare(right.id)
+    })
+}
+
+function collectSubagentBranchRoots(
+  mainlineIds: Set<string>,
+  byId: Map<string, ConversationSessionRow>,
+  effectiveChildren: Map<string | null, string[]>,
+): ConversationSessionRow[] {
+  const roots: ConversationSessionRow[] = []
+  for (const parentId of mainlineIds) {
+    const childIds = effectiveChildren.get(parentId) || []
+    for (const childId of childIds) {
+      const child = byId.get(childId)
+      if (isSubagentSession(child)) roots.push(child)
+    }
+  }
+  return roots.sort((left, right) => {
+    if (left.started_at !== right.started_at) return left.started_at - right.started_at
+    return left.id.localeCompare(right.id)
+  })
+}
+
+function buildSubagentBranchTree(
+  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
+  root: ConversationSessionRow,
+  byId: Map<string, ConversationSessionRow>,
+  effectiveChildren: Map<string | null, string[]>,
+  seen = new Set<string>(),
+): ConversationBranch | null {
+  if (!isSubagentSession(root) || seen.has(root.id)) return null
+  seen.add(root.id)
+
+  const childBranches = (effectiveChildren.get(root.id) || [])
+    .map(childId => byId.get(childId))
+    .filter((child): child is ConversationSessionRow => isSubagentSession(child))
+    .map(child => buildSubagentBranchTree(db, child, byId, effectiveChildren, seen))
+    .filter((branch): branch is ConversationBranch => !!branch)
+
+  const messages = loadVisibleMessagesForSessions(db, [root])
+  return {
+    session_id: root.id,
+    parent_session_id: root.parent_session_id ?? null,
+    source: safeText(root.source),
+    model: safeText(root.model),
+    title: root.title ?? null,
+    started_at: Number(root.started_at || 0),
+    ended_at: root.ended_at ?? null,
+    last_active: Number(root.last_active || root.started_at || 0),
+    is_active: root.is_active,
+    messages,
+    visible_count: messages.length,
+    thread_session_count: 1,
+    input_tokens: Number(root.input_tokens || 0),
+    output_tokens: Number(root.output_tokens || 0),
+    branches: childBranches,
+  }
+}
+
+function directBridgeContextParent(
+  session: ConversationSessionRow | undefined,
+  byId: Map<string, ConversationSessionRow>,
+  inferredParents: Map<string, string>,
+): ConversationSessionRow | null {
+  if (!session) return null
+  if (isBridgeContextBranchContinuationChild(session, byId) && session.parent_session_id) {
+    return byId.get(session.parent_session_id) || null
+  }
+  const inferredParentId = inferredParents.get(session.id)
+  return inferredParentId ? (byId.get(inferredParentId) || null) : null
+}
+
+function bridgeContextHistoryPathToRoot(session: ConversationSessionRow, byId: Map<string, ConversationSessionRow>, inferredParents: Map<string, string>): ConversationSessionRow[] {
+  const firstParent = directBridgeContextParent(session, byId, inferredParents)
+  if (!firstParent) return []
   const reversed: ConversationSessionRow[] = []
   const seen = new Set<string>()
-  let current = byId.get(session.parent_session_id || '') || null
+  let current: ConversationSessionRow | null = firstParent
 
   while (current && !seen.has(current.id)) {
     reversed.push(current)
     seen.add(current.id)
-    current = current.parent_session_id ? byId.get(current.parent_session_id) || null : null
+    current = directBridgeContextParent(current, byId, inferredParents)
   }
 
   return reversed.reverse()
 }
 
-function hasBridgeContextContinuationDescendant(session: ConversationSessionRow, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, seen = new Set<string>()): boolean {
+function hasBridgeContextContinuationDescendant(
+  session: ConversationSessionRow,
+  byId: Map<string, ConversationSessionRow>,
+  childrenByParent: Map<string | null, string[]>,
+  inferredChildren: Map<string, string[]>,
+  seen = new Set<string>(),
+): boolean {
   if (seen.has(session.id)) return false
   seen.add(session.id)
+  if ((inferredChildren.get(session.id) || []).length > 0) return true
   const childIds = childrenByParent.get(session.id) || []
   for (const childId of childIds) {
     const child = byId.get(childId)
     if (!child || child.source === 'tool') continue
     if (isBridgeContextBranchContinuationChild(child, byId)) return true
-    if (hasBridgeContextContinuationDescendant(child, byId, childrenByParent, seen)) return true
+    if (hasBridgeContextContinuationDescendant(child, byId, childrenByParent, inferredChildren, seen)) return true
   }
   return false
 }
@@ -556,10 +771,17 @@ function isLatestCompressionContinuation(session: ConversationSessionRow | undef
   return collectConversationChain(path[0].id, byId, childrenByParent).at(-1)?.id === session.id
 }
 
-function isLatestBridgeContextContinuation(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>): boolean {
+function isLatestBridgeContextContinuation(
+  session: ConversationSessionRow | undefined,
+  byId: Map<string, ConversationSessionRow>,
+  childrenByParent: Map<string | null, string[]>,
+  inferredParents: Map<string, string>,
+  inferredChildren: Map<string, string[]>,
+): boolean {
   if (!session || session.source === 'tool') return false
-  if (!isBridgeContextBranchContinuationChild(session, byId)) return false
-  const parent = session.parent_session_id ? byId.get(session.parent_session_id) : null
+  const parent = directBridgeContextParent(session, byId, inferredParents)
+  if (!parent) return false
+  if ((inferredChildren.get(session.id) || []).length > 0) return false
   if (parent && isCompressionLineageChild(parent, byId)) return false
   return collectConversationChain(session.id, byId, childrenByParent).at(-1)?.id === session.id
 }
@@ -570,37 +792,29 @@ function isBranchRoot(session: ConversationSessionRow | undefined, byId: Map<str
   return !!parent && parent.end_reason === 'branched' && timingMatchesParent(parent, session)
 }
 
-function isVisibleConversationStart(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>): boolean {
+function isRealConversationBranch(session: ConversationSessionRow | undefined, byId: Map<string, ConversationSessionRow>): boolean {
   if (!session || session.source === 'tool') return false
-  if (
-    session.source === 'tui'
-    && session.parent_session_id == null
-    && isBridgeContextPrompt(session.raw_preview || session.preview || session.title)
-  ) {
-    logConversationDecision('hide-top-level-root-bridge-context', session, { reason: 'bridge-context root should be folded' })
-    return false
-  }
-  if (isLatestCompressionContinuation(session, byId, childrenByParent)) {
-    logConversationDecision('keep-visible-latest-compression-continuation', session, { reason: 'latest compression continuation' })
-    return true
-  }
-  if (isLatestBridgeContextContinuation(session, byId, childrenByParent)) {
-    logConversationDecision('keep-visible-latest-bridge-context-continuation', session, { reason: 'latest bridge-context continuation' })
-    return true
-  }
-  if (nextContinuationChild(session, byId, childrenByParent)) {
-    logConversationDecision('hide-visible-root-has-continuation-child', session, { reason: 'has newer continuation child' })
-    return false
-  }
-  if (hasBridgeContextContinuationDescendant(session, byId, childrenByParent)) {
-    logConversationDecision('hide-root-has-bridge-context-descendant', session, { reason: 'bridge-context descendant exists' })
+  if (session.source === 'subagent') return true
+  return isBranchRoot(session, byId)
+}
+
+function isVisibleConversationStart(
+  session: ConversationSessionRow | undefined,
+  byId: Map<string, ConversationSessionRow>,
+  childrenByParent: Map<string | null, string[]>,
+  inferredParents: Map<string, string>,
+  inferredChildren: Map<string, string[]>,
+): boolean {
+  if (!session || session.source === 'tool') return false
+  if (directBridgeContextParent(session, byId, inferredParents)) {
+    logConversationDecision('hide-bridge-context-continuation-child', session, { reason: 'fold into root conversation' })
     return false
   }
   const visible = (session.parent_session_id == null || isBranchRoot(session, byId))
     && !isCompressionContinuationChild(session, byId, childrenByParent)
     && !isCompressionLineageChild(session, byId)
   if (visible) {
-    logConversationDecision('keep-visible-root', session, { reason: 'root or branch root with no newer continuation' })
+    logConversationDecision('keep-visible-root', session, { reason: 'root or branch root conversation' })
   }
   return visible
 }
@@ -677,55 +891,63 @@ function toSummary(session: ConversationSessionRow): ConversationSummary {
   }
 }
 
-function aggregateSummary(rootId: string, byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, branchSessionCount: number): ConversationSummary | null {
+function aggregateSummary(
+  rootId: string,
+  byId: Map<string, ConversationSessionRow>,
+  childrenByParent: Map<string | null, string[]>,
+  branchSessionCount: number,
+  inferredParents: Map<string, string>,
+): ConversationSummary | null {
   const requestedRoot = byId.get(rootId)
   const compressionHistory = requestedRoot ? compressionPathToRoot(requestedRoot, byId).slice(0, -1) : []
-  const bridgeContextHistory = requestedRoot ? bridgeContextHistoryPathToRoot(requestedRoot, byId) : []
+  const bridgeContextHistory = requestedRoot ? bridgeContextHistoryPathToRoot(requestedRoot, byId, inferredParents) : []
   const chain = compressionHistory.length ? [requestedRoot!] : collectConversationChain(rootId, byId, childrenByParent)
-  if (!chain.length || ![...chain, ...compressionHistory, ...bridgeContextHistory].some(session => session.has_visible_messages || Number(session.tool_call_count || 0) > 0)) return null
-  const root = chain[0]
+  const unifiedChain = [...bridgeContextHistory, ...chain]
+  if (!unifiedChain.length || ![...unifiedChain, ...compressionHistory].some(session => session.has_visible_messages || Number(session.tool_call_count || 0) > 0)) return null
+  const root = unifiedChain[0]
+  const visibleHead = requestedRoot || root
   const last = chain[chain.length - 1]
-  const firstPreview = chain.map(session => session.preview).find(Boolean) || ''
-  const costStatuses = Array.from(new Set(chain.map(session => safeText(session.cost_status)).filter(Boolean)))
+  const firstPreview = unifiedChain.map(session => session.preview).find(Boolean) || ''
+  const costStatuses = Array.from(new Set(unifiedChain.map(session => safeText(session.cost_status)).filter(Boolean)))
   const normalizedBranchSessionCount = requestedRoot && isBridgeContextBranchContinuationChild(requestedRoot, byId)
     ? 0
     : branchSessionCount
   logger.info({
     rootId,
-    chainIds: chain.map(session => session.id),
+    chainIds: unifiedChain.map(session => session.id),
     compressionHistoryIds: compressionHistory.map(session => session.id),
     bridgeContextHistoryIds: bridgeContextHistory.map(session => session.id),
-    representedSessionIds: representedSessionIds(chain),
+    representedSessionIds: representedSessionIds(unifiedChain),
     branchSessionCount: normalizedBranchSessionCount,
   }, '[conversations-db] aggregate-summary')
 
   return {
-    ...toSummary(root),
+    ...toSummary(visibleHead),
     title: root.title || last.title || firstPreview || null,
-    preview: last.preview || root.preview || firstPreview,
-    started_at: Number(root.started_at || 0),
+    preview: last.preview || visibleHead.preview || root.preview || firstPreview,
+    started_at: Number(visibleHead.started_at || 0),
     ended_at: last?.ended_at ?? null,
-    last_active: Math.max(...chain.map(session => session.last_active)),
-    is_active: chain.some(session => session.is_active),
+    last_active: Math.max(...unifiedChain.map(session => session.last_active)),
+    is_active: unifiedChain.some(session => session.is_active),
     billing_provider: last?.billing_provider ?? root.billing_provider ?? null,
     billing_base_url: last?.billing_base_url ?? root.billing_base_url ?? null,
     cost_status: costStatuses.length === 1 ? costStatuses[0] : 'mixed',
-    thread_session_count: chain.length,
+    thread_session_count: unifiedChain.length,
     branch_session_count: normalizedBranchSessionCount,
-    message_count: chain.reduce((sum, session) => sum + Number(session.message_count || 0), 0),
-    tool_call_count: chain.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
+    message_count: unifiedChain.reduce((sum, session) => sum + Number(session.message_count || 0), 0),
+    tool_call_count: unifiedChain.reduce((sum, session) => sum + Number(session.tool_call_count || 0), 0),
     input_tokens: Number(last.input_tokens || 0),
     output_tokens: Number(last.output_tokens || 0),
     cache_read_tokens: Number(last.cache_read_tokens || 0),
     cache_write_tokens: Number(last.cache_write_tokens || 0),
     reasoning_tokens: Number(last.reasoning_tokens || 0),
-    estimated_cost_usd: chain.reduce((sum, session) => sum + Number(session.estimated_cost_usd || 0), 0),
-    actual_cost_usd: chain.reduce<number | null>((sum, session) => {
+    estimated_cost_usd: unifiedChain.reduce((sum, session) => sum + Number(session.estimated_cost_usd || 0), 0),
+    actual_cost_usd: unifiedChain.reduce<number | null>((sum, session) => {
       const actual = session.actual_cost_usd
       if (actual == null) return sum
       return (sum || 0) + Number(actual)
     }, null),
-    represented_session_ids: representedSessionIds(chain),
+    represented_session_ids: representedSessionIds(unifiedChain),
   }
 }
 
@@ -795,7 +1017,7 @@ function collectBranchRoots(chain: ConversationSessionRow[], byId: Map<string, C
     for (const childId of childIds) {
       if (chainIds.has(childId) || childId === continuation?.id) continue
       const child = byId.get(childId)
-      if (child) roots.push(child)
+      if (isRealConversationBranch(child, byId)) roots.push(child)
     }
   }
   return roots.sort((a, b) => {
@@ -804,222 +1026,34 @@ function collectBranchRoots(chain: ConversationSessionRow[], byId: Map<string, C
   })
 }
 
-function collectConversationBranches(db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } }, chain: ConversationSessionRow[], byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, seen = new Set<string>(), includeCompressionHistory = true): ConversationBranch[] {
-  const promotedCompressionBranches = includeCompressionHistory
-    ? buildCompressionContinuationAlternativeBranches(db, chain[0], byId, childrenByParent, seen)
-    : []
+function collectConversationBranches(db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } }, chain: ConversationSessionRow[], byId: Map<string, ConversationSessionRow>, childrenByParent: Map<string | null, string[]>, seen = new Set<string>()): ConversationBranch[] {
   const roots = collectBranchRoots(chain, byId, childrenByParent)
   const branches: ConversationBranch[] = []
-  branches.push(...promotedCompressionBranches)
   for (const root of roots) {
     if (seen.has(root.id)) continue
     seen.add(root.id)
     const branchChain = collectConversationChain(root.id, byId, childrenByParent, true)
-    const bridgeHistory = bridgeContextHistoryChain(branchChain)
-    const visibleChain = bridgeHistory.length ? [branchChain[branchChain.length - 1]] : branchChain
-    const visibleRoot = visibleChain[0]
-    if (visibleRoot.id !== root.id) seen.add(visibleRoot.id)
-    const messages = loadVisibleMessagesForSessions(db, visibleChain)
-    const childBranches = bridgeHistory.length
-      ? [
-          buildHistoryBranchFromChain(db, bridgeHistory, visibleRoot, byId, childrenByParent, seen),
-          ...collectConversationBranches(db, visibleChain, byId, childrenByParent, seen, false),
-        ].filter((branch): branch is ConversationBranch => !!branch)
-      : collectConversationBranches(db, branchChain, byId, childrenByParent, seen)
+    const messages = loadVisibleMessagesForSessions(db, branchChain)
+    const childBranches = collectConversationBranches(db, branchChain, byId, childrenByParent, seen)
     branches.push({
-      session_id: visibleRoot.id,
-      parent_session_id: bridgeHistory.length ? (root.parent_session_id ?? null) : (root.parent_session_id ?? null),
-      source: safeText(visibleRoot.source),
-      model: safeText(visibleRoot.model),
-      title: visibleRoot.title ?? null,
-      started_at: Number(visibleRoot.started_at || 0),
-      ended_at: visibleChain[visibleChain.length - 1]?.ended_at ?? visibleRoot.ended_at ?? null,
-      last_active: visibleChain.reduce((max, session) => Math.max(max, Number(session.last_active || session.started_at || 0)), Number(visibleRoot.last_active || visibleRoot.started_at || 0)),
-      is_active: visibleChain.some(session => session.is_active),
+      session_id: root.id,
+      parent_session_id: root.parent_session_id ?? null,
+      source: safeText(root.source),
+      model: safeText(root.model),
+      title: root.title ?? null,
+      started_at: Number(root.started_at || 0),
+      ended_at: branchChain[branchChain.length - 1]?.ended_at ?? root.ended_at ?? null,
+      last_active: branchChain.reduce((max, session) => Math.max(max, Number(session.last_active || session.started_at || 0)), Number(root.last_active || root.started_at || 0)),
+      is_active: branchChain.some(session => session.is_active),
       messages,
       visible_count: messages.length,
-      thread_session_count: visibleChain.length,
-      input_tokens: visibleChain.reduce((sum, session) => sum + Number(session.input_tokens || 0), 0),
-      output_tokens: visibleChain.reduce((sum, session) => sum + Number(session.output_tokens || 0), 0),
+      thread_session_count: branchChain.length,
+      input_tokens: branchChain.reduce((sum, session) => sum + Number(session.input_tokens || 0), 0),
+      output_tokens: branchChain.reduce((sum, session) => sum + Number(session.output_tokens || 0), 0),
       branches: childBranches,
     })
   }
   return branches
-}
-
-function buildHistoryBranchFromChain(
-  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
-  historyChain: ConversationSessionRow[],
-  visibleRoot: ConversationSessionRow,
-  byId: Map<string, ConversationSessionRow>,
-  childrenByParent: Map<string | null, string[]>,
-  seen: Set<string>,
-): ConversationBranch | null {
-  if (!historyChain.length) return null
-  const displayChain = historyChain.filter(session => session.has_visible_messages || Number(session.tool_call_count || 0) > 0)
-  if (!displayChain.length) return null
-  const historyRoot = displayChain[0]
-  const last = displayChain[displayChain.length - 1]
-  const messages = loadVisibleMessagesForSessions(db, displayChain)
-  return {
-    session_id: historyRoot.id,
-    parent_session_id: visibleRoot.id,
-    source: safeText(historyRoot.source),
-    model: safeText(last.model || historyRoot.model),
-    title: historyRoot.title || displayChain.map(session => session.preview).find(Boolean) || historyRoot.id,
-    started_at: Number(historyRoot.started_at || 0),
-    ended_at: last.ended_at ?? null,
-    last_active: displayChain.reduce((max, session) => Math.max(max, Number(session.last_active || session.started_at || 0)), Number(historyRoot.last_active || historyRoot.started_at || 0)),
-    is_active: displayChain.some(session => session.is_active),
-    messages,
-    visible_count: messages.length,
-    thread_session_count: displayChain.length,
-    input_tokens: Number(last.input_tokens || 0),
-    output_tokens: Number(last.output_tokens || 0),
-    branches: collectConversationBranches(db, displayChain, byId, childrenByParent, seen, false),
-  }
-}
-
-function buildBridgeContextHistoryBranch(
-  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
-  visibleRoot: ConversationSessionRow | undefined,
-  byId: Map<string, ConversationSessionRow>,
-  childrenByParent: Map<string | null, string[]>,
-  seen: Set<string>,
-): ConversationBranch | null {
-  if (!visibleRoot || !isBridgeContextBranchContinuationChild(visibleRoot, byId)) return null
-  const historyChain = bridgeContextHistoryPathToRoot(visibleRoot, byId)
-  if (!historyChain.length) return null
-  return buildBridgeContextHistoryBranchForSession(
-    db,
-    historyChain[historyChain.length - 1],
-    visibleRoot,
-    byId,
-    childrenByParent,
-    seen,
-  )
-}
-
-function buildBridgeContextHistoryBranchForSession(
-  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
-  historySession: ConversationSessionRow | undefined,
-  visibleRoot: ConversationSessionRow,
-  byId: Map<string, ConversationSessionRow>,
-  childrenByParent: Map<string | null, string[]>,
-  seen: Set<string>,
-): ConversationBranch | null {
-  if (!historySession) return null
-  if (seen.has(historySession.id)) return null
-  if (!historySession.has_visible_messages && Number(historySession.tool_call_count || 0) <= 0) return null
-
-  seen.add(historySession.id)
-  const olderParent = historySession.parent_session_id ? byId.get(historySession.parent_session_id) : undefined
-  const olderHistoryBranch = olderParent && olderParent.source === historySession.source
-    ? buildBridgeContextHistoryBranchForSession(db, olderParent, historySession, byId, childrenByParent, seen)
-    : null
-  const sideBranches = collectConversationBranches(db, [historySession], byId, childrenByParent, seen, false)
-  const messages = loadVisibleMessagesForSessions(db, [historySession])
-
-  return {
-    session_id: historySession.id,
-    parent_session_id: visibleRoot.id,
-    source: safeText(historySession.source),
-    model: safeText(historySession.model),
-    title: historySession.title || historySession.preview || historySession.id,
-    started_at: Number(historySession.started_at || 0),
-    ended_at: historySession.ended_at ?? null,
-    last_active: Number(historySession.last_active || historySession.started_at || 0),
-    is_active: historySession.is_active,
-    messages,
-    visible_count: messages.length,
-    thread_session_count: 1,
-    input_tokens: Number(historySession.input_tokens || 0),
-    output_tokens: Number(historySession.output_tokens || 0),
-    branches: [
-      ...(olderHistoryBranch ? [olderHistoryBranch] : []),
-      ...sideBranches,
-    ],
-  }
-}
-
-function buildCompressionContinuationAlternativeBranches(
-  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
-  visibleRoot: ConversationSessionRow | undefined,
-  byId: Map<string, ConversationSessionRow>,
-  childrenByParent: Map<string | null, string[]>,
-  seen: Set<string>,
-): ConversationBranch[] {
-  if (!visibleRoot) return []
-  const historyChain = compressionPathToRoot(visibleRoot, byId).slice(0, -1)
-  if (!historyChain.length) return []
-
-  const promoted: ConversationBranch[] = []
-  for (const parent of historyChain) {
-    const continuation = nextContinuationChild(parent, byId, childrenByParent, true)
-    const childIds = childrenByParent.get(parent.id) || []
-    for (const childId of childIds) {
-      if (childId === continuation?.id || seen.has(childId)) continue
-      const root = byId.get(childId)
-      if (!root || root.source === 'tool' || root.source !== parent.source) continue
-      if (!isLikelyOrphanContinuation(parent, root)) continue
-
-      seen.add(root.id)
-      const branchChain = collectConversationChain(root.id, byId, childrenByParent, true)
-      const messages = loadVisibleMessagesForSessions(db, branchChain)
-      promoted.push({
-        session_id: root.id,
-        parent_session_id: visibleRoot.id,
-        source: safeText(root.source),
-        model: safeText(root.model),
-        title: root.title ?? null,
-        started_at: Number(root.started_at || 0),
-        ended_at: branchChain[branchChain.length - 1]?.ended_at ?? root.ended_at ?? null,
-        last_active: branchChain.reduce((max, session) => Math.max(max, Number(session.last_active || session.started_at || 0)), Number(root.last_active || root.started_at || 0)),
-        is_active: branchChain.some(session => session.is_active),
-        messages,
-        visible_count: messages.length,
-        thread_session_count: branchChain.length,
-        input_tokens: branchChain.reduce((sum, session) => sum + Number(session.input_tokens || 0), 0),
-        output_tokens: branchChain.reduce((sum, session) => sum + Number(session.output_tokens || 0), 0),
-        branches: collectConversationBranches(db, branchChain, byId, childrenByParent, seen, false),
-      })
-    }
-  }
-  return promoted
-}
-
-function buildCompressionHistoryBranch(
-  db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } },
-  visibleRoot: ConversationSessionRow | undefined,
-  byId: Map<string, ConversationSessionRow>,
-  childrenByParent: Map<string | null, string[]>,
-  seen: Set<string>,
-): ConversationBranch | null {
-  if (!visibleRoot) return null
-  const historyChain = compressionPathToRoot(visibleRoot, byId).slice(0, -1)
-  if (!historyChain.length) return null
-  const historyRoot = historyChain[0]
-  if (seen.has(historyRoot.id)) return null
-  seen.add(historyRoot.id)
-  const last = historyChain[historyChain.length - 1]
-  const messages = loadVisibleMessagesForSessions(db, historyChain)
-  return {
-    session_id: historyRoot.id,
-    parent_session_id: visibleRoot.id,
-    source: safeText(historyRoot.source),
-    model: safeText(last.model || historyRoot.model),
-    title: historyRoot.title || historyChain.map(session => session.preview).find(Boolean) || historyRoot.id,
-    started_at: Number(historyRoot.started_at || 0),
-    ended_at: last.ended_at ?? null,
-    last_active: historyChain.reduce((max, session) => Math.max(max, Number(session.last_active || session.started_at || 0)), Number(historyRoot.last_active || historyRoot.started_at || 0)),
-    is_active: historyChain.some(session => session.is_active),
-    messages,
-    visible_count: messages.length,
-    thread_session_count: historyChain.length,
-    input_tokens: Number(last.input_tokens || 0),
-    output_tokens: Number(last.output_tokens || 0),
-    branches: collectConversationBranches(db, historyChain, byId, childrenByParent, seen),
-  }
 }
 
 function countBranches(branches: ConversationBranch[]): number {
@@ -1147,13 +1181,17 @@ export async function listConversationSummariesFromDb(options: ConversationListO
   const limit = options.limit && options.limit > 0 ? options.limit : DEFAULT_CONVERSATION_LIMIT
   const sessions = await loadConversationSessions(options.source)
   const byId = new Map(sessions.map(session => [session.id, session]))
-  const childrenByParent = new Map<string | null, string[]>()
+  const inferredParents = buildInferredBridgeContextParentMap(sessions)
+  const inferredChildren = buildInferredBridgeContextChildrenMap(inferredParents)
+  const directChildrenByParent = new Map<string | null, string[]>()
   for (const session of sessions) {
     const key = session.parent_session_id ?? null
-    const siblings = childrenByParent.get(key) || []
+    const siblings = directChildrenByParent.get(key) || []
     siblings.push(session.id)
-    childrenByParent.set(key, siblings)
+    directChildrenByParent.set(key, siblings)
   }
+  const childrenByParent = mergeChildrenByParent(directChildrenByParent, inferredChildren)
+  const rootMemo = new Map<string, string | null>()
 
   if (!humanOnly) {
     return sortByRecency(sessions.map(toSummary)).slice(0, limit)
@@ -1161,12 +1199,22 @@ export async function listConversationSummariesFromDb(options: ConversationListO
 
   const db = await openConversationDb()
   try {
-    const summaries = sessions
-      .filter(session => isVisibleConversationStart(session, byId, childrenByParent))
-      .map(session => {
-        const chain = collectConversationChain(session.id, byId, childrenByParent)
-        const branches = collectConversationBranches(db, chain, byId, childrenByParent)
-        return aggregateSummary(session.id, byId, childrenByParent, countBranches(branches))
+    const rootIds = sessions
+      .filter(session => session.source !== 'tool')
+      .filter(session => !isSubagentSession(session))
+      .map(session => rootConversationIdForSession(session.id, byId, inferredParents, rootMemo))
+      .filter((id): id is string => !!id)
+    const uniqueRootIds = [...new Set(rootIds)]
+    const summaries = uniqueRootIds
+      .map(rootId => {
+        const mainline = mainlineSessionsForRoot(rootId, sessions, byId, inferredParents)
+        if (!mainline.length) return null
+        const mainlineIds = new Set(mainline.map(session => session.id))
+        const subagentRoots = collectSubagentBranchRoots(mainlineIds, byId, childrenByParent)
+        const branches = subagentRoots
+          .map(root => buildSubagentBranchTree(db, root, byId, childrenByParent))
+          .filter((branch): branch is ConversationBranch => !!branch)
+        return aggregateSummary(rootId, byId, childrenByParent, countBranches(branches), inferredParents)
       })
       .filter((summary): summary is ConversationSummary => !!summary)
 
@@ -1180,13 +1228,17 @@ export async function getConversationDetailFromDb(sessionId: string, options: Co
   const humanOnly = options.humanOnly !== false
   const sessions = await loadConversationSessions(options.source, true)
   const byId = new Map(sessions.map(session => [session.id, session]))
-  const childrenByParent = new Map<string | null, string[]>()
+  const inferredParents = buildInferredBridgeContextParentMap(sessions)
+  const inferredChildren = buildInferredBridgeContextChildrenMap(inferredParents)
+  const directChildrenByParent = new Map<string | null, string[]>()
   for (const session of sessions) {
     const key = session.parent_session_id ?? null
-    const siblings = childrenByParent.get(key) || []
+    const siblings = directChildrenByParent.get(key) || []
     siblings.push(session.id)
-    childrenByParent.set(key, siblings)
+    directChildrenByParent.set(key, siblings)
   }
+  const childrenByParent = mergeChildrenByParent(directChildrenByParent, inferredChildren)
+  const rootMemo = new Map<string, string | null>()
 
   let chain: ConversationSessionRow[] = []
   if (!humanOnly) {
@@ -1195,17 +1247,10 @@ export async function getConversationDetailFromDb(sessionId: string, options: Co
     chain = [session]
   } else {
     const session = byId.get(sessionId)
-    if (!session || session.source === 'tool') return null
-    if (isBridgeContextBranchContinuationChild(session, byId)) {
-      chain = [session]
-    } else {
-    const rootId = isVisibleConversationStart(session, byId, childrenByParent)
-      ? session.id
-      : compressionChainRootId(sessionId, byId, childrenByParent)
+    if (!session || session.source === 'tool' || isSubagentSession(session)) return null
+    const rootId = rootConversationIdForSession(sessionId, byId, inferredParents, rootMemo)
     if (!rootId) return null
-    if (!isVisibleConversationStart(byId.get(rootId), byId, childrenByParent)) return null
-    chain = collectConversationChain(rootId, byId, childrenByParent)
-    }
+    chain = mainlineSessionsForRoot(rootId, sessions, byId, inferredParents)
   }
 
   if (!chain.length) return null
@@ -1213,7 +1258,11 @@ export async function getConversationDetailFromDb(sessionId: string, options: Co
   const db = await openConversationDb()
   try {
     const messages = loadVisibleMessagesForSessions(db, chain)
-    const branches = humanOnly ? collectConversationBranches(db, chain, byId, childrenByParent) : []
+    const branches = humanOnly
+      ? collectSubagentBranchRoots(new Set(chain.map(session => session.id)), byId, childrenByParent)
+          .map(root => buildSubagentBranchTree(db, root, byId, childrenByParent))
+          .filter((branch): branch is ConversationBranch => !!branch)
+      : []
 
     if (!messages.length) {
       if (humanOnly && !branches.length && !chain.some(session => session.is_live_tui_process || Number(session.tool_call_count || 0) > 0)) return null

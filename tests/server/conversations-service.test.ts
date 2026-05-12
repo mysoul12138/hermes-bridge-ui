@@ -375,17 +375,17 @@ describe('conversations service', () => {
     expect(summaries.map((summary: any) => summary.id)).toEqual(['root'])
     expect(summaries[0]).toMatchObject({
       thread_session_count: 2,
-      branch_session_count: 1,
+      branch_session_count: 0,
       input_tokens: 3,
       output_tokens: 4,
     })
 
     const detail = await mod.getConversationDetail('root', { humanOnly: true })
     expect(detail?.messages.map((message: any) => message.session_id)).toEqual(['root', 'tip'])
-    expect(detail?.branches?.map((branch: any) => branch.session_id)).toEqual(['bridge-duplicate'])
+    expect(detail?.branches ?? []).toEqual([])
   })
 
-  it('treats branched children as their own visible conversations', async () => {
+  it('keeps branched children visible in the export fallback path', async () => {
     exportSessionsRawMock.mockResolvedValue([
       {
         id: 'root',
