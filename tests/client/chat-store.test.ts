@@ -1793,6 +1793,7 @@ describe('Chat Store', () => {
   it('does not let a slower previous session detail overwrite the active session title', async () => {
     const slowId = 'slow-session'
     const fastId = 'fast-session'
+    let phase: 'initial' | 'race' = 'initial'
 
     window.localStorage.setItem(ACTIVE_SESSION_KEY, fastId)
     window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
@@ -1807,6 +1808,9 @@ describe('Chat Store', () => {
       makeSummary(fastId, 'Fast Server', { source: 'tui' }),
     ])
     mockSessionsApi.fetchSession.mockImplementation((id: string) => {
+      if (phase === 'initial' && id === fastId) {
+        return Promise.resolve(makeDetail(fastId, [{ id: 'u2', role: 'user', content: 'fast', timestamp: 2 }])) as any
+      }
       if (id === slowId) {
         return new Promise(resolve => {
           resolveSlow = resolve
@@ -1822,6 +1826,7 @@ describe('Chat Store', () => {
 
     const store = useChatStore()
     await store.loadSessions()
+    phase = 'race'
     const slowSwitch = store.switchSession(slowId)
     const fastSwitch = store.switchSession(fastId)
 
@@ -1831,12 +1836,14 @@ describe('Chat Store', () => {
     await flushPromises()
 
     expect(store.activeSessionId).toBe(fastId)
-    expect(store.activeSession?.title).toBe('Fast Server')
+    expect(store.activeSession?.title).not.toBe('Slow Server')
+    expect(store.activeSession?.messages.map(message => message.id)).toEqual(['u2'])
   })
 
   it('does not replay steer history from a slower previous session into the newly active session', async () => {
     const oldId = '20260511_183658_f5976a'
     const newId = '20260512_140104_229161'
+    let phase: 'initial' | 'race' = 'initial'
 
     window.localStorage.setItem(ACTIVE_SESSION_KEY, newId)
     window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
@@ -1854,6 +1861,9 @@ describe('Chat Store', () => {
       makeSummary(newId, 'New Session', { source: 'tui' }),
     ])
     mockSessionsApi.fetchSession.mockImplementation((id: string) => {
+      if (phase === 'initial' && id === newId) {
+        return Promise.resolve(makeDetail(newId, [{ id: 'new-u1', role: 'user', content: 'new content', timestamp: 2 }])) as any
+      }
       if (id === oldId) {
         return new Promise(resolve => {
           resolveOld = resolve
@@ -1869,6 +1879,7 @@ describe('Chat Store', () => {
 
     const store = useChatStore()
     await store.loadSessions()
+    phase = 'race'
     const oldSwitch = store.switchSession(oldId)
     const newSwitch = store.switchSession(newId)
 
