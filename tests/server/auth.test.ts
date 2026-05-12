@@ -94,13 +94,14 @@ describe('Auth Service', () => {
       const { getToken, appHome, tokenFile } = await loadAuth({ readFile, writeFile, mkdir })
 
       const token = await getToken()
+      const expectedWriteOptions = tokenFile.includes('\\') ? { mode: 0o600 } : {}
 
       expect(token).toMatch(/^[a-f0-9]{64}$/)
       expect(mkdir).toHaveBeenCalledWith(appHome, { recursive: true })
       expect(writeFile).toHaveBeenCalledWith(
         tokenFile,
         expect.stringMatching(/^[a-f0-9]{64}\n$/),
-        { mode: 0o600 },
+        expectedWriteOptions,
       )
     })
   })

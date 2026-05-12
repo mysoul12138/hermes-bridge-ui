@@ -192,15 +192,30 @@ export class GatewayManager {
     }
   }
 
-  /** 从 profile 的 gateway.pid 文件读取 PID（JSON 格式 { "pid": 12345 }） */
+  /** 从 profile 的 gateway.pid 文件读取 PID；缺失时回退到 gateway_state.json */
   private readPidFile(name: string): number | null {
-    const pidPath = join(this.profileDir(name), 'gateway.pid')
-    if (!existsSync(pidPath)) return null
+    const profilePath = this.profileDir(name)
+    const pidPath = join(profilePath, 'gateway.pid')
 
     try {
-      const content = readFileSync(pidPath, 'utf-8').trim()
+      if (existsSync(pidPath)) {
+        const content = readFileSync(pidPath, 'utf-8').trim()
+        const data = JSON.parse(content)
+        return typeof data.pid === 'number' ? data.pid : parseInt(data.pid, 10) || null
+      }
+    } catch {}
+
+    const statePath = join(profilePath, 'gateway_state.json')
+    if (!existsSync(statePath)) return null
+
+    try {
+      const content = readFileSync(statePath, 'utf-8').trim()
       const data = JSON.parse(content)
-      return typeof data.pid === 'number' ? data.pid : parseInt(data.pid, 10) || null
+      const pid = typeof data.pid === 'number' ? data.pid : parseInt(data.pid, 10) || null
+      const state = data?.gateway_state
+      return pid && Number.isFinite(pid) && pid > 0 && (state === 'running' || state === 'starting')
+        ? pid
+        : null
     } catch {
       return null
     }
@@ -215,8 +230,8 @@ export class GatewayManager {
     try {
       process.kill(pid, 0)
       return true
-    } catch {
-      return false
+    } catch (err: any) {
+      return err?.code === 'EPERM'
     }
   }
 

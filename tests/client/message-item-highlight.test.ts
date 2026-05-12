@@ -286,10 +286,11 @@ describe('MessageItem tool details', () => {
       },
     })
 
-    const pre = wrapper.find('pre.message-stream-text')
-    expect(pre.exists()).toBe(true)
-    expect(pre.text()).toBe(content)
-    expect(pre.classes()).toContain('with-streaming-cursor')
+    const block = wrapper.find('.message-stream-text')
+    expect(block.exists()).toBe(true)
+    expect(block.text()).toBe(content)
+    expect(block.classes()).toContain('with-streaming-cursor')
+    expect(block.attributes('class')).toContain('message-stream-text')
   })
 
   it('copies tool detail code through the delegated click handler', async () => {
