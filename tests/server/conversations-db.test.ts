@@ -583,6 +583,87 @@ describe('conversation DB service', () => {
     ])
   })
 
+  it('keeps explicit tui handoff continuations out of the branch tree even when the parent ends as tui_shutdown', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'stability-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'WebUI稳定性打磨',
+      started_at: 100,
+      ended_at: 500,
+      end_reason: 'tui_shutdown',
+      message_count: 20,
+      tool_call_count: 8,
+      input_tokens: 100,
+      output_tokens: 200,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'stability-cont',
+      parent_session_id: 'stability-root',
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'WebUI稳定性打磨 #2',
+      started_at: 300,
+      ended_at: null,
+      end_reason: null,
+      message_count: 10,
+      tool_call_count: 4,
+      input_tokens: 50,
+      output_tokens: 80,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'stability-root', role: 'user', content: '小七 我终于把webui 修的比较好用了', timestamp: 101 })
+    insertMessage(db, { id: 2, session_id: 'stability-root', role: 'assistant', content: '挺好，这一步很关键：先稳定、顺手，再谈“大厂级体验”。', timestamp: 102 })
+    insertMessage(db, { id: 3, session_id: 'stability-root', role: 'user', content: '现在帮我查一下 daily-weather-clothing-advice webui-release-watcher', timestamp: 120 })
+    insertMessage(db, { id: 4, session_id: 'stability-root', role: 'assistant', content: '我先按“三段链路”查：任务配置 → 调度执行记录 → 投递/会话日志。', timestamp: 130 })
+
+    insertMessage(db, { id: 5, session_id: 'stability-cont', role: 'user', content: '小七 我终于把webui 修的比较好用了  虽然还是比不上大厂出的UI', timestamp: 301 })
+    insertMessage(db, { id: 6, session_id: 'stability-cont', role: 'assistant', content: '挺好，这一步很关键：先稳定、顺手，再谈“大厂级体验”。', timestamp: 302 })
+    insertMessage(db, { id: 7, session_id: 'stability-cont', role: 'user', content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.', timestamp: 303 })
+    insertMessage(db, { id: 8, session_id: 'stability-cont', role: 'user', content: '现在给我一个新流程的 5月13号的天气  通知到微信上', timestamp: 304 })
+    insertMessage(db, { id: 9, session_id: 'stability-cont', role: 'assistant', content: '我按“新流程”跑一遍：先用脚本拿 Open‑Meteo 补充数据，再用高德作为主天气源整理。', timestamp: 305 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['stability-root'])
+    expect(summaries[0]?.branch_session_count).toBe(0)
+
+    const detail = await mod.getConversationDetailFromDb('stability-root', { humanOnly: true })
+    expect(detail?.branches ?? []).toEqual([])
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '小七 我终于把webui 修的比较好用了',
+      '挺好，这一步很关键：先稳定、顺手，再谈“大厂级体验”。',
+      '现在帮我查一下 daily-weather-clothing-advice webui-release-watcher',
+      '我先按“三段链路”查：任务配置 → 调度执行记录 → 投递/会话日志。',
+      '小七 我终于把webui 修的比较好用了  虽然还是比不上大厂出的UI',
+      '挺好，这一步很关键：先稳定、顺手，再谈“大厂级体验”。',
+      '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.',
+      '现在给我一个新流程的 5月13号的天气  通知到微信上',
+      '我按“新流程”跑一遍：先用脚本拿 Open‑Meteo 补充数据，再用高德作为主天气源整理。',
+    ])
+  })
+
   it('aggregates an orphan continuation without showing it as a separate conversation', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
