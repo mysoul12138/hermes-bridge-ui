@@ -544,15 +544,26 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
 
   // Fallback: some root-level continuation prompts contain a long summarized
   // history that no longer includes an exact anchor from the immediate parent.
-  // Only allow this when the continuation already carries the same explicit
-  // title as the earlier root. Without the title guard, unrelated adjacent
-  // bridge-context sessions would be merged just because they are close in
-  // time.
+  // Keep this conservative:
+  // - candidate itself must not also be a continuation prompt root
+  // - either titles match, or the continuation history still contains a
+  //   prefix-sized slice of the candidate anchor/preview text
   const sessionTitle = normalizeText(session.title)
-  if (!sessionTitle) return null
+  const history = bridgeContextHistoryText(session.raw_preview || session.preview || session.title)
   const fallback = candidates.find(candidate => {
+    if (isBridgeContextPrompt(candidate.raw_preview || candidate.preview || candidate.title)) return false
     const candidateTitle = normalizeText(candidate.title)
-    if (!candidateTitle || candidateTitle !== sessionTitle) return false
+    const titleMatches = !!sessionTitle && !!candidateTitle && candidateTitle === sessionTitle
+    const candidateAnchors = [
+      candidate.raw_context_anchor,
+      candidate.raw_preview,
+      candidate.preview,
+      candidate.title,
+    ]
+      .map(anchor => normalizeText(anchor))
+      .filter(anchor => anchor.length >= 16)
+    const anchorMatches = candidateAnchors.some(anchor => history.includes(anchor.slice(0, Math.min(anchor.length, 48))))
+    if (!titleMatches && !anchorMatches) return false
     const anchor = Number(candidate.last_active || candidate.started_at || 0)
     const delta = sessionStarted - anchor
     return delta >= 0 && delta <= DUPLICATE_CONTINUATION_WINDOW_SECONDS

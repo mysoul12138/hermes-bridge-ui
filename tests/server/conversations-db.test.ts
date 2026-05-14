@@ -1448,6 +1448,78 @@ describe('conversation DB service', () => {
     ])
   })
 
+  it('folds root-level continuation prompt tui sessions back into the previous real root even when title matching alone is insufficient', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'anchor-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Subagent Deduplication Failure Analysis',
+      started_at: 100,
+      ended_at: 150,
+      end_reason: 'tui_shutdown',
+      message_count: 4,
+      tool_call_count: 2,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'anchor-continuation-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: '继续排查',
+      started_at: 151,
+      ended_at: null,
+      end_reason: null,
+      message_count: 3,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'anchor-root', role: 'assistant', content: '子 agent 找到了关键线索。根因最可能是 parent_session_id 不匹配。', timestamp: 101 })
+    insertMessage(db, {
+      id: 2,
+      session_id: 'anchor-continuation-root',
+      role: 'user',
+      content: 'Previous conversation context:\nassistant: 子 agent 找到了关键线索。根因最可能是 parent_session_id 不匹配。\n\nCurrent user message:\n继续',
+      timestamp: 151,
+    })
+    insertMessage(db, { id: 3, session_id: 'anchor-continuation-root', role: 'assistant', content: '继续排查。', timestamp: 152 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['anchor-root'])
+
+    const detail = await mod.getConversationDetailFromDb('anchor-root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '子 agent 找到了关键线索。根因最可能是 parent_session_id 不匹配。',
+      '继续',
+      '继续排查。',
+    ])
+  })
+
   it('hides empty tui stub sessions from human-only summaries and details', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')
