@@ -226,6 +226,13 @@ function logTitleMutation(source: string, sessionId: string, before: string | un
   })
 }
 
+function logTitleSnapshot(source: string, detail: Record<string, unknown>) {
+  console.info('[chat.title.snapshot]', {
+    source,
+    ...detail,
+  })
+}
+
 function logActiveBinding(source: string, detail: Record<string, unknown>) {
   console.info('[chat.active]', detail.source ? detail : { source, ...detail })
 }
@@ -1552,7 +1559,22 @@ export const useChatStore = defineStore('chat', () => {
         representedIds: Array.from(representedIds).slice(0, 50),
         supplementalTuiIds: supplementalTui.map(item => item.id),
       })
+      logTitleSnapshot('loadSessions.summary-input', {
+        summaries: mergedList.slice(0, 30).map(item => ({
+          id: item.id,
+          title: item.title || '',
+          preview: item.preview || '',
+          representedSessionIds: representedSessionIdsOf(item),
+        })),
+      })
       const freshRaw = mergedList.map(mapHermesSession)
+      logTitleSnapshot('loadSessions.mapped-fresh', {
+        sessions: freshRaw.slice(0, 30).map(session => ({
+          id: session.id,
+          title: session.title || '',
+          representedSessionIds: session.representedSessionIds || [],
+        })),
+      })
       freshRaw.forEach(applySessionModelOverride)
       const freshRawIds = new Set(freshRaw.map(s => s.id))
       const branchMetaIndex = loadBranchSessionMetaIndex()
@@ -1608,6 +1630,15 @@ export const useChatStore = defineStore('chat', () => {
       })
       const freshIds = new Set(visibleFresh.map(s => s.id))
       for (const s of visibleFresh) {
+        const previousSession = sessions.value.find(session => session.id === s.id) || null
+        if (previousSession && previousSession.title !== s.title) {
+          logTitleSnapshot('loadSessions.pre-hydrate-existing', {
+            id: s.id,
+            previousTitle: previousSession.title || '',
+            freshTitle: s.title || '',
+            representedSessionIds: s.representedSessionIds || [],
+          })
+        }
         const prev = msgsByIdBefore.get(s.id)
         const localBridge = bridgeLocalByPersistent.get(s.id)
         const localBridgeMessages = localBridge ? msgsByIdBefore.get(localBridge.id) || localBridge.messages : null
@@ -1670,6 +1701,14 @@ export const useChatStore = defineStore('chat', () => {
         localOnlyIds: localOnly.map(session => session.id),
       })
       sessions.value = [...localOnly, ...visibleFresh]
+      logTitleSnapshot('loadSessions.after-rebuild', {
+        sessions: sessions.value.slice(0, 30).map(session => ({
+          id: session.id,
+          title: session.title || '',
+          representedSessionIds: session.representedSessionIds || [],
+          isBranchSession: !!session.isBranchSession,
+        })),
+      })
       persistSessionsList()
 
       // Restore last active session, fallback to the session that represents
@@ -1686,6 +1725,14 @@ export const useChatStore = defineStore('chat', () => {
         representedTargetId: representedTarget?.id || null,
         targetId: targetId || null,
       })
+      if (representedTarget) {
+        logTitleSnapshot('loadSessions.restore-target-title', {
+          savedId,
+          representedTargetId: representedTarget.id,
+          representedTargetTitle: representedTarget.title || '',
+          representedSessionIds: representedTarget.representedSessionIds || [],
+        })
+      }
       if (targetId && latestSwitchRequestId === switchRequestIdAtLoadStart) {
         logActiveBinding('loadSessions:rebind-before-switch', {
           source: 'loadSessions:rebind-before-switch',
