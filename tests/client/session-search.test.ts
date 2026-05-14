@@ -5,6 +5,7 @@ import { mount } from '@vue/test-utils'
 
 const apiMocks = vi.hoisted(() => ({
   fetchSessionsMock: vi.fn(),
+  fetchConversationSummariesMock: vi.fn(),
   searchSessionsMock: vi.fn(),
   routerPushMock: vi.fn(),
 }))
@@ -12,6 +13,10 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/hermes/sessions', () => ({
   fetchSessions: apiMocks.fetchSessionsMock,
   searchSessions: apiMocks.searchSessionsMock,
+}))
+
+vi.mock('@/api/hermes/conversations', () => ({
+  fetchConversationSummaries: apiMocks.fetchConversationSummariesMock,
 }))
 
 const chatStoreMock = vi.hoisted(() => ({
@@ -81,6 +86,32 @@ describe('session search modal', () => {
     chatStoreMock.sessions = []
     chatStoreMock.loadSessions.mockResolvedValue(undefined)
     chatStoreMock.switchSession.mockResolvedValue(undefined)
+    apiMocks.fetchConversationSummariesMock.mockResolvedValue([
+      {
+        id: 'recent-tui-1',
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Recent TUI fix',
+        preview: 'recent tui preview',
+        started_at: 1710000000,
+        ended_at: 1710000001,
+        last_active: 1710000002,
+        message_count: 2,
+        tool_call_count: 0,
+        input_tokens: 1,
+        output_tokens: 2,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openrouter',
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        is_active: false,
+        thread_session_count: 1,
+        branch_session_count: 0,
+      },
+    ])
     apiMocks.fetchSessionsMock.mockResolvedValue([
       {
         id: 'recent-1',
@@ -155,8 +186,8 @@ describe('session search modal', () => {
     await nextTick()
 
     expect(sessionSearchOpen.value).toBe(true)
-    expect(apiMocks.fetchSessionsMock).toHaveBeenCalledWith(undefined, 8)
-    expect(wrapper.text()).toContain('Recent Docker fix')
+    expect(apiMocks.fetchConversationSummariesMock).toHaveBeenCalledWith({ humanOnly: true, limit: 8 })
+    expect(wrapper.text()).toContain('Recent TUI fix')
   })
 
   it('searches by content and opens the matched session', async () => {
@@ -182,6 +213,166 @@ describe('session search modal', () => {
     expect(chatStoreMock.loadSessions).toHaveBeenCalled()
     expect(chatStoreMock.switchSession).toHaveBeenCalledWith('match-1', '17')
     expect(apiMocks.routerPushMock).toHaveBeenCalledWith({ name: 'hermes.chat' })
+  })
+
+  it('maps a matched represented session id back to the visible root session before switching', async () => {
+    const { openSessionSearch } = useSessionSearch()
+    chatStoreMock.sessions = [
+      {
+        id: 'root-1',
+        representedSessionIds: ['root-1', 'hidden-child-1'],
+      },
+    ]
+    apiMocks.searchSessionsMock.mockResolvedValue([
+      {
+        id: 'hidden-child-1',
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Hidden child result',
+        preview: 'matched hidden child',
+        started_at: 1710001000,
+        ended_at: null,
+        last_active: 1710001005,
+        message_count: 4,
+        tool_call_count: 1,
+        input_tokens: 3,
+        output_tokens: 4,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openrouter',
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        matched_message_id: 23,
+        snippet: 'matched hidden child',
+        rank: 0.1,
+      },
+    ])
+
+    const wrapper = mount(SessionSearchModal)
+
+    openSessionSearch()
+    await flushPromises()
+    await nextTick()
+
+    const input = wrapper.find('input.n-input-stub')
+    await input.setValue('hidden')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+    await nextTick()
+
+    await wrapper.find('button.result-item').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.switchSession).toHaveBeenCalledWith('root-1', '23')
+  })
+
+  it('reloads chat sessions once when the matched result is not in the current session map', async () => {
+    const { openSessionSearch } = useSessionSearch()
+    chatStoreMock.sessions = []
+    chatStoreMock.loadSessions.mockImplementation(async () => {
+      chatStoreMock.sessions = [
+        {
+          id: 'root-2',
+          representedSessionIds: ['root-2', 'hidden-child-2'],
+        },
+      ]
+    })
+    apiMocks.searchSessionsMock.mockResolvedValue([
+      {
+        id: 'hidden-child-2',
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Hidden child reload result',
+        preview: 'matched hidden child',
+        started_at: 1710001000,
+        ended_at: null,
+        last_active: 1710001005,
+        message_count: 4,
+        tool_call_count: 1,
+        input_tokens: 3,
+        output_tokens: 4,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openrouter',
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        matched_message_id: 42,
+        snippet: 'matched hidden child',
+        rank: 0.1,
+      },
+    ])
+
+    const wrapper = mount(SessionSearchModal)
+
+    openSessionSearch()
+    await flushPromises()
+    await nextTick()
+
+    const input = wrapper.find('input.n-input-stub')
+    await input.setValue('reload')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+    await nextTick()
+
+    await wrapper.find('button.result-item').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.loadSessions).toHaveBeenCalled()
+    expect(chatStoreMock.switchSession).toHaveBeenCalledWith('root-2', '42')
+  })
+
+  it('falls back to opening the raw matched session id when no visible root mapping exists', async () => {
+    const { openSessionSearch } = useSessionSearch()
+    chatStoreMock.sessions = []
+    chatStoreMock.loadSessions.mockResolvedValue(undefined)
+    apiMocks.searchSessionsMock.mockResolvedValue([
+      {
+        id: 'raw-tui-session',
+        source: 'tui',
+        model: 'openai/gpt-5.4',
+        title: 'Previous conversation context: assistant...',
+        preview: 'matched raw tui session',
+        started_at: 1710001000,
+        ended_at: null,
+        last_active: 1710001005,
+        message_count: 4,
+        tool_call_count: 1,
+        input_tokens: 3,
+        output_tokens: 4,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: 'openrouter',
+        billing_base_url: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: 0,
+        cost_status: 'estimated',
+        matched_message_id: 77,
+        snippet: 'matched raw tui session',
+        rank: 0.1,
+      },
+    ])
+
+    const wrapper = mount(SessionSearchModal)
+
+    openSessionSearch()
+    await flushPromises()
+    await nextTick()
+
+    const input = wrapper.find('input.n-input-stub')
+    await input.setValue('raw')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+    await nextTick()
+
+    await wrapper.find('button.result-item').trigger('click')
+    await flushPromises()
+
+    expect(chatStoreMock.switchSession).toHaveBeenCalledWith('raw-tui-session', '77')
   })
 })
 

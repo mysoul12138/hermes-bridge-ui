@@ -1628,4 +1628,180 @@ describe('conversation DB service', () => {
     const detail = await mod.getConversationDetailFromDb('empty-tui-stub', { humanOnly: true })
     expect(detail).toBeNull()
   })
+
+  it('prefers explicit bridge continuation links over inferred root-level prompt matching', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'linked-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Push Source Code Changes',
+      started_at: 100,
+      ended_at: 1000,
+      end_reason: 'tui_shutdown',
+      message_count: 2,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'linked-child',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Subagent Deduplication Failure Analysis',
+      started_at: 1010,
+      ended_at: 1020,
+      end_reason: 'tui_shutdown',
+      message_count: 2,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'linked-root', role: 'assistant', content: '让我看最近一次合并提交改了哪些关键文件。', timestamp: 900 })
+    insertMessage(db, {
+      id: 2,
+      session_id: 'linked-child',
+      role: 'user',
+      content: 'Previous conversation context:\nassistant: 让我看最近一次合并提交改了哪些关键文件。\n\nCurrent user message:\n继续',
+      timestamp: 1010,
+    })
+    insertMessage(db, { id: 3, session_id: 'linked-child', role: 'assistant', content: '继续排查。', timestamp: 1011 })
+    db.close()
+
+    const linksDb = new DatabaseSync(join(profileDirState.value, 'webui-bridge-links.db'))
+    linksDb.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_continuation_links (
+        child_session_id TEXT PRIMARY KEY,
+        parent_session_id TEXT NOT NULL
+      )
+    `)
+    linksDb.prepare(`
+      INSERT INTO bridge_continuation_links (child_session_id, parent_session_id)
+      VALUES (?, ?)
+    `).run('linked-child', 'linked-root')
+    linksDb.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['linked-root'])
+
+    const detail = await mod.getConversationDetailFromDb('linked-root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '让我看最近一次合并提交改了哪些关键文件。',
+      '继续',
+      '继续排查。',
+    ])
+  })
+
+  it('includes explicit bridge-linked continuation child ids in represented_session_ids even when the root stayed open', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'open-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: null,
+      started_at: 100,
+      ended_at: null,
+      end_reason: null,
+      message_count: 4,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'late-child',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: null,
+      started_at: 160,
+      ended_at: null,
+      end_reason: null,
+      message_count: 2,
+      tool_call_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'open-root', role: 'assistant', content: 'Root answer before user follow-up', timestamp: 120 })
+    insertMessage(db, { id: 2, session_id: 'open-root', role: 'user', content: 'Why did you skip the memory bootstrap?', timestamp: 130 })
+    insertMessage(db, { id: 3, session_id: 'open-root', role: 'assistant', content: 'I should have loaded memory first.', timestamp: 131 })
+    insertMessage(db, {
+      id: 4,
+      session_id: 'late-child',
+      role: 'user',
+      content: 'Previous conversation context:\nassistant: I should have loaded memory first.\n\nCurrent user message:\ncontinue',
+      timestamp: 160,
+    })
+    insertMessage(db, { id: 5, session_id: 'late-child', role: 'assistant', content: 'Continuing from the earlier session.', timestamp: 161 })
+    db.close()
+
+    const linksDb = new DatabaseSync(join(profileDirState.value, 'webui-bridge-links.db'))
+    linksDb.exec(`
+      CREATE TABLE IF NOT EXISTS bridge_continuation_links (
+        child_session_id TEXT PRIMARY KEY,
+        parent_session_id TEXT NOT NULL
+      )
+    `)
+    linksDb.prepare(`
+      INSERT INTO bridge_continuation_links (child_session_id, parent_session_id)
+      VALUES (?, ?)
+    `).run('late-child', 'open-root')
+    linksDb.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['open-root'])
+    expect(summaries[0]?.represented_session_ids).toEqual(['open-root', 'late-child'])
+
+    const detail = await mod.getConversationDetailFromDb('open-root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      'Root answer before user follow-up',
+      'Why did you skip the memory bootstrap?',
+      'I should have loaded memory first.',
+      'continue',
+      'Continuing from the earlier session.',
+    ])
+  })
 })

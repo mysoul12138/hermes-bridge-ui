@@ -14,6 +14,7 @@ import {
   setLivePendingClarifyForRun,
   setRunSession,
 } from './run-state'
+import { writeBridgeContinuationLink } from './bridge-continuation-links'
 import { getActiveConfigPath } from './hermes-profile'
 import { updateUsage } from '../../db/hermes/usage-store'
 import { countTokens } from '../../lib/context-compressor'
@@ -488,6 +489,7 @@ export class TuiBridgeService {
     const contextTokenCount = countTokens(contextPrompt)
     const contextMessageCount = conversationHistory.filter(item => item.content?.trim()).length
     const usesContextHandoff = bridgeSession.created && contextPrompt !== input
+    const previousPersistentSessionId = bridgeSession.created ? webSessionId : undefined
     if (usesContextHandoff) {
       this.push(runId, {
         event: 'compression.started',
@@ -537,6 +539,9 @@ export class TuiBridgeService {
       state.contextInputTokens = countTokens(this.buildPrompt(input, conversationHistory))
       this.activeRunsByBridgeSession.set(bridgeSessionId, runId)
       await this.client.request('prompt.submit', { session_id: bridgeSessionId, text: this.buildPrompt(input, conversationHistory) })
+    }
+    if (usesContextHandoff && persistentSessionId && previousPersistentSessionId && persistentSessionId !== previousPersistentSessionId) {
+      writeBridgeContinuationLink(persistentSessionId, previousPersistentSessionId)
     }
     return {
       run_id: runId,

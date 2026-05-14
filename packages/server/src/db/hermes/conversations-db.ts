@@ -1,4 +1,5 @@
 import { getActiveProfileDir } from '../../services/hermes/hermes-profile'
+import { readBridgeContinuationLinks } from '../../services/hermes/bridge-continuation-links'
 import type {
   ConversationBranch,
   ConversationDetail,
@@ -611,7 +612,17 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
 
 function buildInferredBridgeContextParentMap(sessions: ConversationSessionRow[]): Map<string, string> {
   const map = new Map<string, string>()
+  const explicitLinks = readBridgeContinuationLinks()
+  const byId = new Map(sessions.map(session => [session.id, session]))
   for (const session of sessions) {
+    const explicitParentId = explicitLinks[session.id]
+    if (explicitParentId && !session.parent_session_id) {
+      const explicitParent = byId.get(explicitParentId)
+      if (explicitParent && explicitParent.id !== session.id) {
+        map.set(session.id, explicitParent.id)
+        continue
+      }
+    }
     const parent = findInferredBridgeContextParent(session, sessions)
     if (parent) map.set(session.id, parent.id)
   }
@@ -1057,16 +1068,20 @@ function aggregateSummary(
   childrenByParent: Map<string | null, string[]>,
   branchSessionCount: number,
   inferredParents: Map<string, string>,
+  mainline?: ConversationSessionRow[],
 ): ConversationSummary | null {
   const requestedRoot = byId.get(rootId)
-  const compressionHistory = requestedRoot ? compressionPathToRoot(requestedRoot, byId).slice(0, -1) : []
-  const bridgeContextHistory = requestedRoot ? bridgeContextHistoryPathToRoot(requestedRoot, byId, inferredParents) : []
-  const chain = compressionHistory.length ? [requestedRoot!] : collectConversationChain(rootId, byId, childrenByParent)
-  const unifiedChain = [...bridgeContextHistory, ...chain]
-  if (!unifiedChain.length || ![...unifiedChain, ...compressionHistory].some(session => session.has_visible_messages || Number(session.tool_call_count || 0) > 0)) return null
+  const fallbackCompressionHistory = requestedRoot ? compressionPathToRoot(requestedRoot, byId).slice(0, -1) : []
+  const fallbackBridgeContextHistory = requestedRoot ? bridgeContextHistoryPathToRoot(requestedRoot, byId, inferredParents) : []
+  const fallbackChain = fallbackCompressionHistory.length ? [requestedRoot!] : collectConversationChain(rootId, byId, childrenByParent)
+  const normalizedMainline = (mainline || []).filter(session => session.source !== 'tool')
+  const unifiedChain = normalizedMainline.length
+    ? normalizedMainline
+    : [...fallbackBridgeContextHistory, ...fallbackChain]
+  if (!unifiedChain.length || ![...unifiedChain, ...fallbackCompressionHistory].some(session => session.has_visible_messages || Number(session.tool_call_count || 0) > 0)) return null
   const root = unifiedChain[0]
   const visibleHead = requestedRoot || root
-  const last = chain[chain.length - 1]
+  const last = unifiedChain[unifiedChain.length - 1]
   const firstPreview = unifiedChain.map(session => session.preview).find(Boolean) || ''
   const costStatuses = Array.from(new Set(unifiedChain.map(session => safeText(session.cost_status)).filter(Boolean)))
   const normalizedBranchSessionCount = requestedRoot && isBridgeContextBranchContinuationChild(requestedRoot, byId)
@@ -1075,8 +1090,9 @@ function aggregateSummary(
   logger.info({
     rootId,
     chainIds: unifiedChain.map(session => session.id),
-    compressionHistoryIds: compressionHistory.map(session => session.id),
-    bridgeContextHistoryIds: bridgeContextHistory.map(session => session.id),
+    compressionHistoryIds: fallbackCompressionHistory.map(session => session.id),
+    bridgeContextHistoryIds: fallbackBridgeContextHistory.map(session => session.id),
+    mainlineIds: normalizedMainline.map(session => session.id),
     representedSessionIds: representedSessionIds(unifiedChain),
     branchSessionCount: normalizedBranchSessionCount,
   }, '[conversations-db] aggregate-summary')
@@ -1406,7 +1422,7 @@ export async function listConversationSummariesFromDb(options: ConversationListO
         const branches = subagentRoots
           .map(root => buildSubagentBranchTree(db, root, byId, childrenByParent))
           .filter((branch): branch is ConversationBranch => !!branch)
-        return aggregateSummary(rootId, byId, childrenByParent, countBranches(branches), inferredParents)
+        return aggregateSummary(rootId, byId, childrenByParent, countBranches(branches), inferredParents, mainline)
       })
       .filter((summary): summary is ConversationSummary => !!summary)
 

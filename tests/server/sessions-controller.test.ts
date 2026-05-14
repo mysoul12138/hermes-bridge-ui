@@ -5,9 +5,11 @@ const getConversationDetailFromDbMock = vi.fn()
 const listConversationSummariesMock = vi.fn()
 const getConversationDetailMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
+const listSessionSummariesMock = vi.fn()
 const getUsageStatsFromDbMock = vi.fn()
 const getSessionMock = vi.fn()
 const deleteSessionMock = vi.fn()
+const localSearchSessionsMock = vi.fn()
 const getGroupChatServerMock = vi.fn()
 const getLocalUsageStatsMock = vi.fn()
 const getActiveProfileNameMock = vi.fn()
@@ -43,7 +45,7 @@ vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
 }))
 
 vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
-  listSessionSummaries: vi.fn(),
+  listSessionSummaries: listSessionSummariesMock,
   searchSessionSummaries: vi.fn(),
   getSessionDetailFromDb: getSessionDetailFromDbMock,
   getUsageStatsFromDb: getUsageStatsFromDbMock,
@@ -53,6 +55,7 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   useLocalSessionStore: () => useLocalSessionStoreState.value,
   deleteSession: localDeleteSessionMock,
+  searchSessions: localSearchSessionsMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
@@ -101,7 +104,9 @@ describe('session conversations controller', () => {
     listConversationSummariesMock.mockReset()
     getConversationDetailMock.mockReset()
     getSessionDetailFromDbMock.mockReset()
+    listSessionSummariesMock.mockReset()
     getUsageStatsFromDbMock.mockReset()
+    localSearchSessionsMock.mockReset()
     getSessionMock.mockReset()
     deleteSessionMock.mockReset()
     localDeleteSessionMock.mockReset()
@@ -192,6 +197,100 @@ describe('session conversations controller', () => {
     expect(localDeleteSessionMock).toHaveBeenCalledTimes(2)
     expect(deleteSessionMock).toHaveBeenCalledTimes(2)
     expect(ctx.body).toMatchObject({ ok: true, deleted: 2, failed: 0 })
+  })
+
+  it('supplements local session-store search results with tui sessions from state.db', async () => {
+    useLocalSessionStoreState.value = true
+    getActiveProfileNameMock.mockReturnValue('default')
+
+    localSearchSessionsMock.mockReturnValue([
+      {
+        id: 'api-hit',
+        source: 'api_server',
+        model: 'gpt-5.4',
+        title: 'API match',
+        started_at: 100,
+        ended_at: 110,
+        last_active: 110,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'api preview',
+        workspace: null,
+        snippet: 'api preview',
+        matched_message_id: null,
+      },
+    ] as any)
+    listSessionSummariesMock.mockResolvedValue([
+      {
+        id: 'tui-child',
+        source: 'tui',
+        model: 'gpt-5.4',
+        title: 'TUI match child',
+        started_at: 200,
+        ended_at: 210,
+        last_active: 210,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'tui match preview',
+        matched_message_id: null,
+        snippet: 'tui preview',
+        rank: 0,
+      },
+    ] as any)
+    listConversationSummariesFromDbMock.mockResolvedValue([
+      {
+        id: 'tui-root',
+        source: 'tui',
+        model: 'gpt-5.4',
+        title: 'TUI match',
+        started_at: 190,
+        ended_at: 210,
+        last_active: 210,
+        message_count: 1,
+        tool_call_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        billing_provider: null,
+        billing_base_url: null,
+        estimated_cost_usd: 0,
+        actual_cost_usd: null,
+        cost_status: '',
+        preview: 'tui preview',
+        is_active: false,
+        thread_session_count: 2,
+        branch_session_count: 0,
+        represented_session_ids: ['tui-root', 'tui-child'],
+      },
+    ] as any)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { query: { q: 'match' }, body: null }
+    await mod.search(ctx)
+
+    expect(listSessionSummariesMock).toHaveBeenCalledWith('tui', 2000)
+    expect(listConversationSummariesFromDbMock).toHaveBeenCalledWith({ source: 'tui', humanOnly: true, limit: 2000 })
+    expect(ctx.body.results.map((item: any) => item.id)).toEqual(['tui-root', 'api-hit'])
   })
 
   it('merges native state.db usage analytics with local Web UI usage for the requested period', async () => {
