@@ -660,7 +660,7 @@ function aggregateSessionDetail(
     ...rootRow,
     id: requestedSessionId,
     source: latest.source || root.source,
-    title: latest.title || root.title || (firstPreview ? (firstPreview.length > 40 ? `${firstPreview.slice(0, 40)}...` : firstPreview) : null),
+    title: root.title || latest.title || (firstPreview ? (firstPreview.length > 40 ? `${firstPreview.slice(0, 40)}...` : firstPreview) : null),
     preview: latest.preview || root.preview || firstPreview || '',
     model: latest.model || root.model,
     ended_at: latest.ended_at,
