@@ -28,6 +28,18 @@ const SYNTHETIC_USER_PREFIXES = [
   'you have reached the maximum number of tool-calling iterations allowed.',
 ]
 
+function shouldTraceContinuationSession(sessionId: string): boolean {
+  return [
+    '20260505_130417_fdf139',
+    '20260430_080229_bb620b',
+    '20260429_103212_a0ee59',
+    '20260424_104940_452355',
+    '20260424_105802_37304c',
+    '20260424_104759_4261bf',
+    '20260424_103744_2a9add',
+  ].includes(sessionId)
+}
+
 const VISIBLE_HUMAN_MESSAGE_SQL = `
   m.content IS NOT NULL
   AND m.content != ''
@@ -540,7 +552,17 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
     })
 
   const exact = candidates.find(candidate => contextReferencesParent(candidate, session))
-  if (exact) return exact
+  if (exact) {
+    if (shouldTraceContinuationSession(session.id)) {
+      logger.info({
+        sessionId: session.id,
+        sessionTitle: session.title,
+        exactParentId: exact.id,
+        exactParentTitle: exact.title,
+      }, '[conversations-db] inferred-parent exact-hit')
+    }
+    return exact
+  }
 
   // Fallback: some root-level continuation prompts contain a long summarized
   // history that no longer includes an exact anchor from the immediate parent.
@@ -568,6 +590,17 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
     const delta = sessionStarted - anchor
     return delta >= 0 && delta <= DUPLICATE_CONTINUATION_WINDOW_SECONDS
   })
+  if (shouldTraceContinuationSession(session.id)) {
+    logger.info({
+      sessionId: session.id,
+      sessionTitle: session.title,
+      history: history.slice(0, 500),
+      candidateIds: candidates.slice(0, 10).map(candidate => candidate.id),
+      candidateTitles: candidates.slice(0, 10).map(candidate => candidate.title),
+      fallbackParentId: fallback?.id || null,
+      fallbackParentTitle: fallback?.title || null,
+    }, '[conversations-db] inferred-parent fallback-result')
+  }
   return fallback || null
 }
 
@@ -673,17 +706,39 @@ function rootConversationIdForSession(
     seen.add(current.id)
     const parentId = effectiveParentId(current, inferredParents)
     if (!parentId) {
+      if (shouldTraceContinuationSession(sessionId)) {
+        logger.info({
+          sessionId,
+          resolvedRootId: current.id,
+          seen: Array.from(seen),
+        }, '[conversations-db] root-conversation resolved-no-parent')
+      }
       memo.set(sessionId, current.id)
       return current.id
     }
     const parent = byId.get(parentId)
     if (!parent) {
+      if (shouldTraceContinuationSession(sessionId)) {
+        logger.info({
+          sessionId,
+          missingParentId: parentId,
+          resolvedRootId: current.id,
+          seen: Array.from(seen),
+        }, '[conversations-db] root-conversation missing-parent')
+      }
       memo.set(sessionId, current.id)
       return current.id
     }
     current = parent
   }
 
+  if (shouldTraceContinuationSession(sessionId)) {
+    logger.info({
+      sessionId,
+      loopResolvedRootId: current?.id ?? session.id,
+      seen: Array.from(seen),
+    }, '[conversations-db] root-conversation loop-exit')
+  }
   memo.set(sessionId, current?.id ?? session.id)
   return current?.id ?? session.id
 }
@@ -899,6 +954,20 @@ function isVisibleConversationStart(
   const visible = (session.parent_session_id == null || isBranchRoot(session, byId))
     && !isCompressionContinuationChild(session, byId, childrenByParent)
     && !isCompressionLineageChild(session, byId)
+  if (shouldTraceContinuationSession(session.id)) {
+    logger.info({
+      sessionId: session.id,
+      visible,
+      parentSessionId: session.parent_session_id,
+      isBranchRoot: isBranchRoot(session, byId),
+      hasDirectBridgeParent: !!directBridgeContextParent(session, byId, inferredParents),
+      isCompressionContinuationChild: isCompressionContinuationChild(session, byId, childrenByParent),
+      isCompressionLineageChild: isCompressionLineageChild(session, byId),
+      title: session.title,
+      preview: session.preview,
+      rawPreview: session.raw_preview,
+    }, '[conversations-db] visible-start-eval')
+  }
   if (visible) {
     logConversationDecision('keep-visible-root', session, { reason: 'root or branch root conversation' })
   }
