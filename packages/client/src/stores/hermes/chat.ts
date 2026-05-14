@@ -247,6 +247,15 @@ function looksLikeEmptyTuiStub(session: SessionSummary): boolean {
     && Number(session.tool_call_count || 0) === 0
 }
 
+function looksLikeEmptyTuiStubSession(session: Session): boolean {
+  return session.source === 'tui'
+    && (!session.title || session.title === session.id)
+    && !(session.messages || []).length
+    && Number(session.messageCount || 0) === 0
+    && Number(session.inputTokens || 0) === 0
+    && Number(session.outputTokens || 0) === 0
+}
+
 function logActiveBinding(source: string, detail: Record<string, unknown>) {
   console.info('[chat.active]', detail.source ? detail : { source, ...detail })
 }
@@ -1600,7 +1609,7 @@ export const useChatStore = defineStore('chat', () => {
           representedSessionIds: representedSessionIdsOf(item),
         })),
       })
-      const freshRaw = mergedList.map(mapHermesSession)
+      const freshRaw = mergedList.map(mapHermesSession).filter(session => !looksLikeEmptyTuiStubSession(session))
       logTitleSnapshot('loadSessions.mapped-fresh', {
         sessions: freshRaw.slice(0, 30).map(session => ({
           id: session.id,
@@ -1696,6 +1705,13 @@ export const useChatStore = defineStore('chat', () => {
       // Sessions without an active in-flight run are considered deleted and
       // cleaned up along with their cached messages.
       const localOnly = sessions.value.filter(s => {
+        if (looksLikeEmptyTuiStubSession(s)) {
+          removeItemWithLegacy(msgsCacheKey(s.id), legacyMsgsCacheKey(s.id))
+          removeItemWithLegacy(inFlightKey(s.id), legacyInFlightKey(s.id))
+          clearSessionModelOverride(s.id)
+          clearBridgeLocalSession(s.id)
+          return false
+        }
         if (freshIds.has(s.id)) return false
         const persistentId = readBridgeBackingSessionId(s.id)
         if (persistentId && freshRawIds.has(persistentId)) {
