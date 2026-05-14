@@ -344,15 +344,18 @@ export async function getHermesSession(ctx: any) {
 export async function remove(ctx: any) {
   if (useLocalSessionStore()) {
     const sessionId = ctx.params.id
-    const ok = localDeleteSession(sessionId)
-    if (!ok) {
-      ctx.status = 500
-      ctx.body = { error: 'Failed to delete session' }
+    const localOk = localDeleteSession(sessionId)
+    if (localOk) {
+      deleteUsage(sessionId)
+      ctx.body = { ok: true }
       return
     }
-    deleteUsage(sessionId)
-    ctx.body = { ok: true }
-    return
+
+    // In local session-store mode, Hermes TUI sessions are not necessarily
+    // mirrored into the Web UI SQLite store. If the local delete misses,
+    // fall through to the Hermes deletion path instead of surfacing a false
+    // 500 to the frontend.
+    logger.info('[remove] local session-store miss, falling back to Hermes delete for sessionId=%s', sessionId)
   }
 
   const sessionId = ctx.params.id
@@ -407,8 +410,17 @@ export async function batchRemove(ctx: any) {
 
   if (useLocalSessionStore()) {
     for (const id of validIds) {
-      const ok = localDeleteSession(id)
+      const localOk = localDeleteSession(id)
+      if (localOk) {
+        deleteUsage(id)
+        results.deleted++
+        continue
+      }
+
+      const ok = await hermesCli.deleteSession(id)
       if (ok) {
+        storage?.markSessionDeleted(id, (storage?.getSessionProfile(id)?.profile_name) || currentProfile)
+        storage?.deleteSessionProfile(id)
         deleteUsage(id)
         results.deleted++
       } else {
