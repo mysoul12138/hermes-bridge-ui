@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { NButton, NInput, NModal, NSpin, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import { fetchSessions, searchSessions, type SessionSearchResult, type SessionSummary } from '@/api/hermes/sessions'
+import { fetchConversationSummaries, type ConversationSummary } from '@/api/hermes/conversations'
 import { useChatStore } from '@/stores/hermes/chat'
 import { useSessionSearch } from '@/composables/useSessionSearch'
 
@@ -15,7 +16,8 @@ const { sessionSearchOpen } = useSessionSearch()
 
 const query = ref('')
 const loading = ref(false)
-const recentSessions = ref<SessionSummary[]>([])
+type RecentSession = SessionSummary | ConversationSummary
+const recentSessions = ref<RecentSession[]>([])
 const searchResults = ref<SessionSearchResult[]>([])
 const activeIndex = ref(0)
 const inputRef = ref<InstanceType<typeof NInput> | null>(null)
@@ -27,7 +29,12 @@ type SearchItem = SessionSearchResult | (SessionSummary & {
   snippet?: string
   matched_message_id: number | null
   rank: number
+}) | (ConversationSummary & {
+  snippet?: string
+  matched_message_id: number | null
+  rank: number
 })
+type ChatStoreSession = typeof chatStore.sessions[number]
 
 const hasQuery = computed(() => query.value.trim().length > 0)
 
@@ -75,11 +82,22 @@ function getItemTitle(item: SearchItem): string {
   return item.id
 }
 
+function looksLikeContinuationPrompt(text: string | null | undefined): boolean {
+  const normalized = (text || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  return normalized.startsWith('previous conversation context:')
+    || normalized.startsWith('current user message:')
+}
+
 async function loadRecentSessions() {
   const seq = ++requestSeq
   loading.value = true
   try {
-    const sessions = await fetchSessions(undefined, 8)
+    let sessions: RecentSession[]
+    try {
+      sessions = await fetchConversationSummaries({ humanOnly: true, limit: 8 })
+    } catch {
+      sessions = await fetchSessions(undefined, 8)
+    }
     if (seq !== requestSeq) return
     recentSessions.value = sessions
     searchResults.value = []
@@ -125,7 +143,76 @@ async function openItem(item: SearchItem) {
   sessionSearchOpen.value = false
 
   await ensureChatSessionsLoaded()
-  await chatStore.switchSession(item.id, messageId)
+  let targetSession: ChatStoreSession | null = chatStore.sessions.find(session =>
+    session.id === item.id || (session.representedSessionIds || [session.id]).includes(item.id),
+  ) || null
+  let targetId = targetSession?.id || item.id
+
+  const shouldResolveViaSummaries = !targetSession || looksLikeContinuationPrompt(targetSession.title) || looksLikeContinuationPrompt(getItemTitle(item))
+  if (shouldResolveViaSummaries) {
+    try {
+      const summaries = await fetchConversationSummaries({ humanOnly: true, limit: 2000 })
+      const mapped = summaries.find(summary => (summary.represented_session_ids || [summary.id]).includes(item.id))
+      if (mapped) {
+        targetId = mapped.id
+        targetSession = chatStore.sessions.find(session => session.id === mapped.id) || null
+        if (!targetSession) {
+          const fallbackSession: ChatStoreSession = {
+            id: mapped.id,
+            title: mapped.title || mapped.preview || mapped.id,
+            source: mapped.source,
+            messages: [],
+            createdAt: Math.round((mapped.started_at || 0) * 1000) || Date.now(),
+            updatedAt: Math.round((mapped.last_active || mapped.started_at || 0) * 1000) || Date.now(),
+            model: mapped.model,
+            provider: mapped.billing_provider || undefined,
+            billingBaseUrl: mapped.billing_base_url || undefined,
+            messageCount: mapped.message_count,
+            inputTokens: mapped.input_tokens,
+            outputTokens: mapped.output_tokens,
+            endedAt: mapped.ended_at != null ? Math.round(mapped.ended_at * 1000) : null,
+            lastActiveAt: mapped.last_active ? Math.round(mapped.last_active * 1000) : undefined,
+            branchSessionCount: mapped.branch_session_count,
+            representedSessionIds: mapped.represented_session_ids || [mapped.id],
+          }
+          chatStore.sessions.unshift(fallbackSession)
+          targetSession = fallbackSession
+        }
+      }
+    } catch {
+      // Fall back to the current chat store session map when summaries fail.
+    }
+  }
+
+  if (!targetSession) {
+    await chatStore.loadSessions()
+    targetSession = chatStore.sessions.find(session =>
+      session.id === targetId || (session.representedSessionIds || [session.id]).includes(item.id),
+    ) || null
+  }
+  if (!targetSession) {
+    const fallbackSession: ChatStoreSession = {
+      id: targetId,
+      title: getItemTitle(item),
+      source: item.source,
+      messages: [],
+      createdAt: Math.round((item.started_at || 0) * 1000) || Date.now(),
+      updatedAt: Math.round((item.last_active || item.started_at || 0) * 1000) || Date.now(),
+      model: item.model,
+      provider: item.billing_provider || undefined,
+      billingBaseUrl: item.billing_base_url || undefined,
+      messageCount: item.message_count,
+      inputTokens: item.input_tokens,
+      outputTokens: item.output_tokens,
+      endedAt: item.ended_at != null ? Math.round(item.ended_at * 1000) : null,
+      lastActiveAt: item.last_active ? Math.round(item.last_active * 1000) : undefined,
+      representedSessionIds: [targetId, item.id],
+    }
+    chatStore.sessions.unshift(fallbackSession)
+    targetSession = fallbackSession
+  }
+  const finalTargetId = targetSession ? targetSession.id : targetId
+  await chatStore.switchSession(finalTargetId, messageId)
   if (router.currentRoute.value.name !== 'hermes.chat') {
     await router.push({ name: 'hermes.chat' })
   }

@@ -232,4 +232,63 @@ describe('session DB detail', () => {
       'root-cont:assistant:after compression',
     ])
   })
+
+  it('does not auto-link a parentless bridge prompt continuation when the compression parent already has an explicit continuation child', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'root',
+      source: 'tui',
+      started_at: 100,
+      ended_at: 110,
+      end_reason: 'compression',
+      message_count: 1,
+      tool_call_count: 0,
+    })
+    insertSession(db, {
+      id: 'explicit-cont',
+      source: 'tui',
+      parent_session_id: 'root',
+      started_at: 111,
+      ended_at: 120,
+      end_reason: 'orphaned_compression',
+      message_count: 1,
+      tool_call_count: 0,
+    })
+    insertSession(db, {
+      id: 'parentless-cont',
+      source: 'tui',
+      started_at: 150,
+      ended_at: 160,
+      end_reason: 'compression',
+      message_count: 2,
+      tool_call_count: 0,
+    })
+
+    insertMessage(db, { id: 1, session_id: 'root', role: 'user', content: 'UI bridge test root', timestamp: 101 })
+    insertMessage(db, { id: 2, session_id: 'explicit-cont', role: 'assistant', content: 'first continuation', timestamp: 112 })
+    insertMessage(db, {
+      id: 3,
+      session_id: 'parentless-cont',
+      role: 'user',
+      content: 'Previous conversation context:\nassistant: first continuation\n\nCurrent user message:\nkeep going',
+      timestamp: 150,
+    })
+    insertMessage(db, { id: 4, session_id: 'parentless-cont', role: 'assistant', content: 'second continuation', timestamp: 151 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const detail = await mod.getSessionDetailFromDb('parentless-cont')
+
+    expect(detail?.id).toBe('parentless-cont')
+    expect(detail?.started_at).toBe(150)
+    expect(detail?.thread_session_count).toBe(1)
+    expect(detail?.messages.map((message: any) => `${message.session_id}:${message.role}:${message.content}`)).toEqual([
+      'parentless-cont:user:Previous conversation context:\nassistant: first continuation\n\nCurrent user message:\nkeep going',
+      'parentless-cont:assistant:second continuation',
+    ])
+  })
 })

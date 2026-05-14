@@ -1865,7 +1865,7 @@ export const useChatStore = defineStore('chat', () => {
         }
         clearClarify(sid)
       }
-      if (detail.title) {
+      if (detail.title && !looksLikeContinuationPrompt(detail.title)) {
         logTitleMutation('refreshActiveSession.detail', target.id, target.title, detail.title, { sid })
         target.title = detail.title
       }
@@ -2318,7 +2318,7 @@ export const useChatStore = defineStore('chat', () => {
           clearClarify(sessionId)
         }
         // Update title: use Hermes title, or fallback to first user message
-        if (detail.title) {
+        if (detail.title && !looksLikeContinuationPrompt(detail.title)) {
           console.info('[chat.switchSession.detail]', {
             requestedSessionId: sessionId,
             detailId: detail.id,

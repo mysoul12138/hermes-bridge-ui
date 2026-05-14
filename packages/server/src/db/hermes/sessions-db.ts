@@ -417,7 +417,13 @@ function linkOrphanCompressionContinuations(sessions: HermesSessionInternalRow[]
 
   for (const parent of sessions) {
     if (!isCompressionEnded(parent) || parent.ended_at == null) continue
+    const hasExplicitContinuation = sessions.some(session =>
+      session.parent_session_id === parent.id
+      && session.source === parent.source
+      && isLikelyOrphanContinuation(parent, session),
+    )
     const candidates = parentless.filter(child => {
+      if (hasExplicitContinuation && isBridgeContextPrompt(child.preview || child.title)) return false
       return isLikelyOrphanContinuation(parent, child)
     })
     if (candidates.length !== 1) continue

@@ -1903,6 +1903,28 @@ describe('Chat Store', () => {
     expect(store.activeSession?.title).toBe('Fresh Summary Title')
   })
 
+  it('does not let a continuation prompt detail title overwrite a better summary title', async () => {
+    const sid = '20260430_080229_bb620b'
+    window.localStorage.setItem(ACTIVE_SESSION_KEY, sid)
+    window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify([
+      { id: sid, title: 'diff 里我又看到一个很小的 Windows path normalizati...', source: 'tui', messages: [], createdAt: 1, updatedAt: 1 },
+    ]))
+
+    mockConversationsApi.fetchConversationSummaries.mockResolvedValue([
+      makeSummary(sid, 'diff 里我又看到一个很小的 Windows path normalizati...', { source: 'tui' }),
+    ])
+    mockSessionsApi.fetchSession.mockResolvedValue({
+      ...makeDetail(sid, [{ id: 'u1', role: 'user', content: '继续', timestamp: 1 }]),
+      title: 'Previous conversation context: assistant: ...',
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.activeSessionId).toBe(sid)
+    expect(store.activeSession?.title).toBe('diff 里我又看到一个很小的 Windows path normalizati...')
+  })
+
   it('does not replay steer history from a slower previous session into the newly active session', async () => {
     const oldId = '20260511_183658_f5976a'
     const newId = '20260512_140104_229161'
