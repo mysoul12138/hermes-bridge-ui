@@ -7,11 +7,15 @@ const getConversationDetailMock = vi.fn()
 const getSessionDetailFromDbMock = vi.fn()
 const getUsageStatsFromDbMock = vi.fn()
 const getSessionMock = vi.fn()
+const deleteSessionMock = vi.fn()
 const getGroupChatServerMock = vi.fn()
 const getLocalUsageStatsMock = vi.fn()
 const getActiveProfileNameMock = vi.fn()
 const loggerWarnMock = vi.fn()
+const loggerInfoMock = vi.fn()
 const getCompressionSnapshotMock = vi.fn()
+const localDeleteSessionMock = vi.fn()
+const useLocalSessionStoreState = vi.hoisted(() => ({ value: false }))
 
 vi.mock('../../packages/server/src/db/hermes/conversations-db', () => ({
   listConversationSummariesFromDb: listConversationSummariesFromDbMock,
@@ -25,6 +29,7 @@ vi.mock('../../packages/server/src/services/hermes/conversations', () => ({
 
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: {
+    info: loggerInfoMock,
     warn: loggerWarnMock,
     error: vi.fn(),
   },
@@ -33,7 +38,7 @@ vi.mock('../../packages/server/src/services/logger', () => ({
 vi.mock('../../packages/server/src/services/hermes/hermes-cli', () => ({
   listSessions: vi.fn(),
   getSession: getSessionMock,
-  deleteSession: vi.fn(),
+  deleteSession: deleteSessionMock,
   renameSession: vi.fn(),
 }))
 
@@ -44,9 +49,10 @@ vi.mock('../../packages/server/src/db/hermes/sessions-db', () => ({
   getUsageStatsFromDb: getUsageStatsFromDbMock,
 }))
 
-// Mock useLocalSessionStore to return false so we test the CLI path
+// Mock useLocalSessionStore toggleable per-test
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
-  useLocalSessionStore: () => false,
+  useLocalSessionStore: () => useLocalSessionStoreState.value,
+  deleteSession: localDeleteSessionMock,
 }))
 
 vi.mock('../../packages/server/src/db/hermes/usage-store', () => ({
@@ -97,12 +103,16 @@ describe('session conversations controller', () => {
     getSessionDetailFromDbMock.mockReset()
     getUsageStatsFromDbMock.mockReset()
     getSessionMock.mockReset()
+    deleteSessionMock.mockReset()
+    localDeleteSessionMock.mockReset()
+    useLocalSessionStoreState.value = false
     getGroupChatServerMock.mockReset()
     getGroupChatServerMock.mockReturnValue(null)
     getLocalUsageStatsMock.mockReset()
     getActiveProfileNameMock.mockReset()
     getActiveProfileNameMock.mockReturnValue('default')
     loggerWarnMock.mockReset()
+    loggerInfoMock.mockReset()
     getCompressionSnapshotMock.mockReset()
   })
 
@@ -154,6 +164,34 @@ describe('session conversations controller', () => {
     expect(loggerWarnMock).toHaveBeenCalled()
     expect(getConversationDetailMock).toHaveBeenCalledWith('root', { source: undefined, humanOnly: false })
     expect(ctx.body).toEqual({ session_id: 'root', messages: [{ id: 1 }], visible_count: 1, thread_session_count: 1 })
+  })
+
+  it('falls back to Hermes deletion when local session-store miss occurs', async () => {
+    useLocalSessionStoreState.value = true
+    localDeleteSessionMock.mockReturnValue(false)
+    deleteSessionMock.mockResolvedValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { params: { id: 'tui-session-1' }, body: null }
+    await mod.remove(ctx)
+
+    expect(localDeleteSessionMock).toHaveBeenCalledWith('tui-session-1')
+    expect(deleteSessionMock).toHaveBeenCalledWith('tui-session-1')
+    expect(ctx.body).toEqual({ ok: true })
+  })
+
+  it('falls back to Hermes batch deletion when local session-store misses', async () => {
+    useLocalSessionStoreState.value = true
+    localDeleteSessionMock.mockReturnValue(false)
+    deleteSessionMock.mockResolvedValue(true)
+
+    const mod = await import('../../packages/server/src/controllers/hermes/sessions')
+    const ctx: any = { request: { body: { ids: ['tui-a', 'tui-b'] } }, body: null }
+    await mod.batchRemove(ctx)
+
+    expect(localDeleteSessionMock).toHaveBeenCalledTimes(2)
+    expect(deleteSessionMock).toHaveBeenCalledTimes(2)
+    expect(ctx.body).toMatchObject({ ok: true, deleted: 2, failed: 0 })
   })
 
   it('merges native state.db usage analytics with local Web UI usage for the requested period', async () => {
