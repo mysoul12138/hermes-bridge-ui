@@ -531,7 +531,6 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
     .filter(candidate => candidate.source !== 'tool')
     .filter(candidate => Number(candidate.started_at || 0) <= sessionStarted)
     .filter(candidate => candidate.has_visible_messages || Number(candidate.tool_call_count || 0) > 0)
-    .filter(candidate => contextReferencesParent(candidate, session))
     .sort((left, right) => {
       const leftAnchor = Number(left.last_active || left.started_at || 0)
       const rightAnchor = Number(right.last_active || right.started_at || 0)
@@ -540,7 +539,25 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
       return right.id.localeCompare(left.id)
     })
 
-  return candidates[0] || null
+  const exact = candidates.find(candidate => contextReferencesParent(candidate, session))
+  if (exact) return exact
+
+  // Fallback: some root-level continuation prompts contain a long summarized
+  // history that no longer includes an exact anchor from the immediate parent.
+  // Only allow this when the continuation already carries the same explicit
+  // title as the earlier root. Without the title guard, unrelated adjacent
+  // bridge-context sessions would be merged just because they are close in
+  // time.
+  const sessionTitle = normalizeText(session.title)
+  if (!sessionTitle) return null
+  const fallback = candidates.find(candidate => {
+    const candidateTitle = normalizeText(candidate.title)
+    if (!candidateTitle || candidateTitle !== sessionTitle) return false
+    const anchor = Number(candidate.last_active || candidate.started_at || 0)
+    const delta = sessionStarted - anchor
+    return delta >= 0 && delta <= DUPLICATE_CONTINUATION_WINDOW_SECONDS
+  })
+  return fallback || null
 }
 
 function buildInferredBridgeContextParentMap(sessions: ConversationSessionRow[]): Map<string, string> {
@@ -860,6 +877,10 @@ function isVisibleConversationStart(
   inferredChildren: Map<string, string[]>,
 ): boolean {
   if (!session || session.source === 'tool') return false
+  if (session.source === 'tui' && !session.has_visible_messages && Number(session.tool_call_count || 0) <= 0 && !session.title) {
+    logConversationDecision('hide-empty-tui-stub', session, { reason: 'no visible messages or tool activity' })
+    return false
+  }
   if (directBridgeContextParent(session, byId, inferredParents)) {
     logConversationDecision('hide-bridge-context-continuation-child', session, { reason: 'fold into root conversation' })
     return false
