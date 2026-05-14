@@ -573,9 +573,7 @@ describe('conversation DB service', () => {
       '我把指南更新了   你现在把合并指南skill 更新一下',
       '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。',
       '开始更新 skill。',
-      '我把指南更新了   你现在把合并指南skill 更新一下',
       '我先定位现有的合并指南 skill 和你更新后的指南来源，然后按 skill 安全规范做最小更新。',
-      '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.',
       '开始更新 skill：我会新增一个“从项目开发指南同步的合并约束”章节。',
       '我把指南更新了   你现在把合并指南skill 更新一下',
       '我先读取你上传的新版 SKILL.md 和现有 skill。',
@@ -658,9 +656,75 @@ describe('conversation DB service', () => {
       '我先按“三段链路”查：任务配置 → 调度执行记录 → 投递/会话日志。',
       '小七 我终于把webui 修的比较好用了  虽然还是比不上大厂出的UI',
       '挺好，这一步很关键：先稳定、顺手，再谈“大厂级体验”。',
-      '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.',
       '现在给我一个新流程的 5月13号的天气  通知到微信上',
       '我按“新流程”跑一遍：先用脚本拿 Open‑Meteo 补充数据，再用高德作为主天气源整理。',
+    ])
+  })
+
+  it('drops compaction handoff notes and only removes the exact duplicated root-opening user message', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'root-clean',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Adding engineering code standard skill',
+      started_at: 100,
+      ended_at: 200,
+      end_reason: 'compression',
+      message_count: 5,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'cont-clean',
+      parent_session_id: 'root-clean',
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Adding engineering code standard skill #2',
+      started_at: 200.01,
+      ended_at: null,
+      end_reason: null,
+      message_count: 5,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'root-clean', role: 'user', content: '添加一个skill 以后只要涉及写代码就要加载这个skill', timestamp: 101 })
+    insertMessage(db, { id: 2, session_id: 'root-clean', role: 'assistant', content: 'root assistant', timestamp: 102 })
+    insertMessage(db, { id: 3, session_id: 'cont-clean', role: 'user', content: '添加一个skill 以后只要涉及写代码就要加载这个skill', timestamp: 201 })
+    insertMessage(db, { id: 4, session_id: 'cont-clean', role: 'assistant', content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.', timestamp: 202 })
+    insertMessage(db, { id: 5, session_id: 'cont-clean', role: 'user', content: '增加一条记忆规则 以后创建skill 或者安装skill 时 一定要做场景匹配', timestamp: 203 })
+    insertMessage(db, { id: 6, session_id: 'cont-clean', role: 'assistant', content: 'new assistant answer', timestamp: 204 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const detail = await mod.getConversationDetailFromDb('root-clean', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '添加一个skill 以后只要涉及写代码就要加载这个skill',
+      'root assistant',
+      '增加一条记忆规则 以后创建skill 或者安装skill 时 一定要做场景匹配',
+      'new assistant answer',
     ])
   })
 

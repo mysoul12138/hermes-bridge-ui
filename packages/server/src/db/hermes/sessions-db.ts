@@ -10,6 +10,13 @@ const LINEAGE_TOLERANCE_SECONDS = 3
 const DUPLICATE_CONTINUATION_WINDOW_SECONDS = 600
 const COMPRESSION_END_REASONS = new Set(['compression', 'compressed'])
 const BRIDGE_CONTEXT_PROMPT_PREFIX = 'previous conversation context:'
+const SYNTHETIC_USER_PREFIXES = [
+  '[system:',
+  '[context compaction',
+  'summary generation was unavailable.',
+  "you've reached the maximum number of tool-calling iterations allowed.",
+  'you have reached the maximum number of tool-calling iterations allowed.',
+]
 const SEARCH_CANDIDATE_MULTIPLIER = 20
 const SEARCH_CANDIDATE_MIN = 100
 
@@ -93,6 +100,11 @@ function normalizeNullableString(value: unknown): string | null {
 
 function normalizeText(value: unknown): string {
   return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function isSyntheticUserText(content: unknown): boolean {
+  const text = normalizeText(content)
+  return SYNTHETIC_USER_PREFIXES.some(prefix => text.startsWith(prefix))
 }
 
 function mapRow(row: Record<string, unknown>): HermesSessionRow {
@@ -655,6 +667,36 @@ function aggregateSessionDetail(
   const firstPreview = chain.map(session => session.preview).find(Boolean) || root.preview
 
   const { parent_session_id: _parentSessionId, ...rootRow } = root
+  const sessionIndex = new Map(chain.map((session, index) => [session.id, index]))
+  const compactionSessionIndexes = messages
+    .filter(message => isSyntheticUserText(message.content))
+    .map(message => sessionIndex.get(message.session_id))
+    .filter((index): index is number => index != null)
+  const firstCompactionSessionIndex = compactionSessionIndexes.length ? Math.min(...compactionSessionIndexes) : null
+  const firstRootUser = messages.find(message => message.session_id === root.id && message.role === 'user' && !isSyntheticUserText(message.content))
+  const firstVisibleUserBySession = new Map<string, string>()
+  let duplicateRemoved = false
+  const normalizedMessages = messages.filter((message, index) => {
+    if (isSyntheticUserText(message.content)) return false
+    if (!firstRootUser) return true
+    if (firstCompactionSessionIndex == null) return true
+    if (index === 0) return true
+    if (message.role !== 'user') return true
+    if (message.session_id === firstRootUser.session_id) return true
+    if (duplicateRemoved) return true
+
+    const currentSessionIndex = sessionIndex.get(message.session_id)
+    if (currentSessionIndex == null || currentSessionIndex < firstCompactionSessionIndex) return true
+
+    const existingFirst = firstVisibleUserBySession.get(message.session_id)
+    if (!existingFirst) {
+      firstVisibleUserBySession.set(message.session_id, normalizeText(message.content))
+      if (normalizeText(message.content) !== normalizeText(firstRootUser.content)) return true
+      duplicateRemoved = true
+      return false
+    }
+    return true
+  })
 
   return {
     ...rootRow,
@@ -677,7 +719,7 @@ function aggregateSessionDetail(
     estimated_cost_usd: chain.reduce((sum, session) => sum + Number(session.estimated_cost_usd || 0), 0),
     actual_cost_usd: actualCosts.length ? actualCosts.reduce((sum, value) => sum + Number(value || 0), 0) : null,
     cost_status: costStatuses.length === 1 ? costStatuses[0] : (costStatuses.length > 1 ? 'mixed' : ''),
-    messages,
+    messages: normalizedMessages,
     thread_session_count: chain.length,
   }
 }

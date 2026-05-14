@@ -209,6 +209,45 @@ describe('session DB compression lineage', () => {
     expect(detailFromTip?.title).toBe('Mermaid fix')
   })
 
+  it('filters compaction handoff notes and exact duplicated opening user turns from aggregated detail', async () => {
+    insertSession(db!, {
+      id: 'root',
+      source: 'tui',
+      title: 'Root title',
+      started_at: 100,
+      ended_at: 200,
+      end_reason: 'compression',
+      message_count: 2,
+    })
+    insertSession(db!, {
+      id: 'tip',
+      source: 'tui',
+      parent_session_id: 'root',
+      title: 'Root title #2',
+      started_at: 201,
+      ended_at: null,
+      end_reason: null,
+      message_count: 4,
+    })
+
+    insertMessage(db!, { id: 1, session_id: 'root', role: 'user', content: '添加一个skill 以后只要涉及写代码就要加载这个skill', timestamp: 101 })
+    insertMessage(db!, { id: 2, session_id: 'root', role: 'assistant', content: 'root assistant', timestamp: 102 })
+    insertMessage(db!, { id: 3, session_id: 'tip', role: 'user', content: '添加一个skill 以后只要涉及写代码就要加载这个skill', timestamp: 201 })
+    insertMessage(db!, { id: 4, session_id: 'tip', role: 'assistant', content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below.', timestamp: 202 })
+    insertMessage(db!, { id: 5, session_id: 'tip', role: 'user', content: '增加一条记忆规则 以后创建skill 或者安装skill 时 一定要做场景匹配', timestamp: 203 })
+    insertMessage(db!, { id: 6, session_id: 'tip', role: 'assistant', content: 'new assistant answer', timestamp: 204 })
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const detail = await mod.getSessionDetailFromDb('root')
+
+    expect(detail?.messages.map(message => message.content)).toEqual([
+      '添加一个skill 以后只要涉及写代码就要加载这个skill',
+      'root assistant',
+      '增加一条记忆规则 以后创建skill 或者安装skill 时 一定要做场景匹配',
+      'new assistant answer',
+    ])
+  })
+
   it('merges an orphan session that starts immediately after compression', async () => {
     insertSession(db!, {
       id: 'root',
