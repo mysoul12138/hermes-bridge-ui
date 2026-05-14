@@ -233,6 +233,12 @@ function logTitleSnapshot(source: string, detail: Record<string, unknown>) {
   })
 }
 
+function looksLikeContinuationPrompt(text: string | null | undefined): boolean {
+  const normalized = (text || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  return normalized.startsWith('previous conversation context:')
+    || normalized.startsWith('current user message:')
+}
+
 function logActiveBinding(source: string, detail: Record<string, unknown>) {
   console.info('[chat.active]', detail.source ? detail : { source, ...detail })
 }
@@ -1555,7 +1561,13 @@ export const useChatStore = defineStore('chat', () => {
 
       const supplementalCandidates = tuiRaw.filter(item => !representedIds.has(item.id))
       const supplementalParented = supplementalCandidates.filter(item => !!(item as any).parent_session_id).map(item => item.id)
-      const supplementalTui: SessionSummary[] = supplementalCandidates.filter(item => !(item as any).parent_session_id)
+      const supplementalContinuationLike = supplementalCandidates
+        .filter(item => looksLikeContinuationPrompt((item as any).preview || item.title || ''))
+        .map(item => item.id)
+      const supplementalTui: SessionSummary[] = supplementalCandidates.filter(item =>
+        !(item as any).parent_session_id
+        && !looksLikeContinuationPrompt((item as any).preview || item.title || '')
+      )
       const mergedList = [...list, ...supplementalTui]
       logSessionLoad('supplemental-tui', {
         representedIds: Array.from(representedIds).slice(0, 50),
@@ -1563,6 +1575,7 @@ export const useChatStore = defineStore('chat', () => {
         supplementalCandidateIds: supplementalCandidates.slice(0, 80).map(item => item.id),
         supplementalCandidateCount: supplementalCandidates.length,
         supplementalParentedIds: supplementalParented.slice(0, 80),
+        supplementalContinuationLikeIds: supplementalContinuationLike.slice(0, 80),
         supplementalAlreadyRepresentedCount: tuiRaw.length - supplementalCandidates.length,
         supplementalTuiIds: supplementalTui.map(item => item.id),
       })
