@@ -1555,7 +1555,7 @@ export const useChatStore = defineStore('chat', () => {
 
       const supplementalCandidates = tuiRaw.filter(item => !representedIds.has(item.id))
       const supplementalParented = supplementalCandidates.filter(item => !!(item as any).parent_session_id).map(item => item.id)
-      const supplementalTui: SessionSummary[] = []
+      const supplementalTui: SessionSummary[] = supplementalCandidates.filter(item => !(item as any).parent_session_id)
       const mergedList = [...list, ...supplementalTui]
       logSessionLoad('supplemental-tui', {
         representedIds: Array.from(representedIds).slice(0, 50),
