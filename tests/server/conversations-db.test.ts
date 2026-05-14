@@ -1520,6 +1520,78 @@ describe('conversation DB service', () => {
     ])
   })
 
+  it('falls back on an anchor middle-fragment match for root-level continuation prompts when exact prefix matching misses', async () => {
+    ensureSqliteAvailable()
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(join(profileDirState.value, 'state.db'))
+    createSchema(db)
+
+    insertSession(db, {
+      id: 'middle-anchor-root',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Root A',
+      started_at: 100,
+      ended_at: 150,
+      end_reason: 'tui_shutdown',
+      message_count: 2,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+    insertSession(db, {
+      id: 'middle-anchor-cont',
+      parent_session_id: null,
+      source: 'tui',
+      model: 'openai/gpt-5.4',
+      title: 'Unrelated display title',
+      started_at: 151,
+      ended_at: null,
+      end_reason: null,
+      message_count: 2,
+      tool_call_count: 1,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      reasoning_tokens: 0,
+      billing_provider: 'openai',
+      estimated_cost_usd: 0,
+      actual_cost_usd: 0,
+      cost_status: 'estimated',
+    })
+
+    insertMessage(db, { id: 1, session_id: 'middle-anchor-root', role: 'assistant', content: '浏览器引用号刷新了，我先重新抓页面状态，再继续自己登录。', timestamp: 101 })
+    insertMessage(db, {
+      id: 2,
+      session_id: 'middle-anchor-cont',
+      role: 'user',
+      content: 'Previous conversation context:\nassistant: 我先重新抓页面状态，再继续自己登录。\n\nCurrent user message:\n继续',
+      timestamp: 151,
+    })
+    insertMessage(db, { id: 3, session_id: 'middle-anchor-cont', role: 'assistant', content: '继续后续排查。', timestamp: 152 })
+    db.close()
+
+    const mod = await import('../../packages/server/src/db/hermes/conversations-db')
+    const summaries = await mod.listConversationSummariesFromDb({ humanOnly: true })
+    expect(summaries.map((summary: any) => summary.id)).toEqual(['middle-anchor-root'])
+
+    const detail = await mod.getConversationDetailFromDb('middle-anchor-root', { humanOnly: true })
+    expect(detail?.messages.map((message: any) => message.content)).toEqual([
+      '浏览器引用号刷新了，我先重新抓页面状态，再继续自己登录。',
+      '继续',
+      '继续后续排查。',
+    ])
+  })
+
   it('hides empty tui stub sessions from human-only summaries and details', async () => {
     ensureSqliteAvailable()
     const { DatabaseSync } = await import('node:sqlite')

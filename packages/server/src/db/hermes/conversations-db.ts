@@ -584,7 +584,12 @@ function findInferredBridgeContextParent(session: ConversationSessionRow, sessio
     ]
       .map(anchor => normalizeText(anchor))
       .filter(anchor => anchor.length >= 16)
-    const anchorMatches = candidateAnchors.some(anchor => history.includes(anchor.slice(0, Math.min(anchor.length, 48))))
+    const anchorMatches = candidateAnchors.some(anchor => {
+      const prefix = anchor.slice(0, Math.min(anchor.length, 48))
+      const middleStart = Math.max(0, Math.floor(anchor.length / 3))
+      const middle = anchor.slice(middleStart, middleStart + Math.min(48, anchor.length - middleStart))
+      return history.includes(prefix) || (!!middle && history.includes(middle))
+    })
     if (!titleMatches && !anchorMatches) return false
     const anchor = Number(candidate.last_active || candidate.started_at || 0)
     const delta = sessionStarted - anchor
