@@ -22,6 +22,8 @@ const BRIDGE_CONTEXT_PROMPT_PREFIX = 'previous conversation context:'
 const BRIDGE_CURRENT_USER_MARKER = 'current user message:'
 const SYNTHETIC_USER_PREFIXES = [
   '[system:',
+  '[context compaction',
+  'summary generation was unavailable.',
   "you've reached the maximum number of tool-calling iterations allowed.",
   'you have reached the maximum number of tool-calling iterations allowed.',
 ]
@@ -1011,7 +1013,7 @@ function normalizeVisibleMessage(message: { id: number | string, session_id: str
     : rawContent
   if (!content) return null
   if (role !== 'user' && role !== 'assistant') return null
-  if (role === 'user' && isSyntheticUserText(content)) return null
+  if (isSyntheticUserText(content)) return null
 
   return {
     id: message.id,
@@ -1026,7 +1028,13 @@ function normalizeVisibleMessage(message: { id: number | string, session_id: str
 
 function normalizeVisibleMessagesFromRows(rows: Array<Record<string, unknown>>, sessions: ConversationSessionRow[]): ConversationMessage[] {
   const sessionById = new Map(sessions.map(session => [session.id, session]))
-  return rows
+  const sessionIndex = new Map(sessions.map((session, index) => [session.id, index]))
+  const compactionSessionIndexes = rows
+    .filter(row => isSyntheticUserText(row.content))
+    .map(row => sessionIndex.get(String(row.session_id || '')))
+    .filter((index): index is number => index != null)
+  const firstCompactionSessionIndex = compactionSessionIndexes.length ? Math.min(...compactionSessionIndexes) : null
+  const normalized = rows
     .map(row => {
       const session = sessionById.get(String(row.session_id || ''))
       return normalizeVisibleMessage({
@@ -1042,6 +1050,32 @@ function normalizeVisibleMessagesFromRows(rows: Array<Record<string, unknown>>, 
       if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp
       return String(a.id).localeCompare(String(b.id))
     })
+  if (normalized.length < 2) return normalized
+
+  const firstUser = normalized.find(message => message.role === 'user')
+  if (!firstUser) return normalized
+  if (firstCompactionSessionIndex == null) return normalized
+
+  const firstVisibleUserBySession = new Map<string, string>()
+  let duplicateRemoved = false
+  return normalized.filter((message, index) => {
+    if (index === 0) return true
+    if (message.role !== 'user') return true
+    const currentSessionId = message.session_id
+    if (currentSessionId === firstUser.session_id) return true
+    if (duplicateRemoved) return true
+    const currentSessionIndex = sessionIndex.get(currentSessionId)
+    if (currentSessionIndex == null || currentSessionIndex < firstCompactionSessionIndex) return true
+
+    const existingFirst = firstVisibleUserBySession.get(currentSessionId)
+    if (!existingFirst) {
+      firstVisibleUserBySession.set(currentSessionId, normalizeText(message.content))
+      if (normalizeText(message.content) !== normalizeText(firstUser.content)) return true
+      duplicateRemoved = true
+      return false
+    }
+    return true
+  })
 }
 
 function loadVisibleMessagesForSessions(db: { prepare: (sql: string) => { all: (...params: any[]) => Array<Record<string, unknown>> } }, sessions: ConversationSessionRow[]): ConversationMessage[] {
