@@ -10,7 +10,7 @@ import {
   respondClarify as respondClarifyApi,
   type PendingClarify,
 } from '@/api/hermes/clarify'
-import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, fetchSessionUsageSingle, type SessionDetail, type SessionSummary } from '@/api/hermes/sessions'
+import { deleteSession as deleteSessionApi, fetchSession, fetchSessions, fetchHermesSessions, fetchSessionUsageSingle, type SessionDetail, type SessionSummary } from '@/api/hermes/sessions'
 import { fetchConversationDetail, fetchConversationSummaries, type ConversationBranch, type ConversationMessage, type ConversationSummary } from '@/api/hermes/conversations'
 import { getApiKey } from '@/api/client'
 import { defineStore } from 'pinia'
@@ -1537,7 +1537,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       let tuiRaw: SessionSummary[] = []
       try {
-        tuiRaw = await fetchSessions('tui')
+        tuiRaw = await fetchHermesSessions('tui')
       } catch {
         tuiRaw = []
       }
@@ -1553,10 +1553,17 @@ export const useChatStore = defineStore('chat', () => {
         for (const id of representedSessionIdsOf(item)) representedIds.add(id)
       }
 
-      const supplementalTui = tuiRaw.filter(item => !representedIds.has(item.id))
+      const supplementalCandidates = tuiRaw.filter(item => !representedIds.has(item.id))
+      const supplementalParented = supplementalCandidates.filter(item => !!(item as any).parent_session_id).map(item => item.id)
+      const supplementalTui: SessionSummary[] = []
       const mergedList = [...list, ...supplementalTui]
       logSessionLoad('supplemental-tui', {
         representedIds: Array.from(representedIds).slice(0, 50),
+        tuiHermesCount: tuiRaw.length,
+        supplementalCandidateIds: supplementalCandidates.slice(0, 80).map(item => item.id),
+        supplementalCandidateCount: supplementalCandidates.length,
+        supplementalParentedIds: supplementalParented.slice(0, 80),
+        supplementalAlreadyRepresentedCount: tuiRaw.length - supplementalCandidates.length,
         supplementalTuiIds: supplementalTui.map(item => item.id),
       })
       logTitleSnapshot('loadSessions.summary-input', {
