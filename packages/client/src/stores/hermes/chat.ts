@@ -239,6 +239,14 @@ function looksLikeContinuationPrompt(text: string | null | undefined): boolean {
     || normalized.startsWith('current user message:')
 }
 
+function looksLikeEmptyTuiStub(session: SessionSummary): boolean {
+  return session.source === 'tui'
+    && !session.title
+    && !(session.preview || '').trim()
+    && Number(session.message_count || 0) === 0
+    && Number(session.tool_call_count || 0) === 0
+}
+
 function logActiveBinding(source: string, detail: Record<string, unknown>) {
   console.info('[chat.active]', detail.source ? detail : { source, ...detail })
 }
@@ -1564,9 +1572,13 @@ export const useChatStore = defineStore('chat', () => {
       const supplementalContinuationLike = supplementalCandidates
         .filter(item => looksLikeContinuationPrompt((item as any).preview || item.title || ''))
         .map(item => item.id)
+      const supplementalEmptyStubIds = supplementalCandidates
+        .filter(item => looksLikeEmptyTuiStub(item))
+        .map(item => item.id)
       const supplementalTui: SessionSummary[] = supplementalCandidates.filter(item =>
         !(item as any).parent_session_id
         && !looksLikeContinuationPrompt((item as any).preview || item.title || '')
+        && !looksLikeEmptyTuiStub(item)
       )
       const mergedList = [...list, ...supplementalTui]
       logSessionLoad('supplemental-tui', {
@@ -1576,6 +1588,7 @@ export const useChatStore = defineStore('chat', () => {
         supplementalCandidateCount: supplementalCandidates.length,
         supplementalParentedIds: supplementalParented.slice(0, 80),
         supplementalContinuationLikeIds: supplementalContinuationLike.slice(0, 80),
+        supplementalEmptyStubIds: supplementalEmptyStubIds.slice(0, 80),
         supplementalAlreadyRepresentedCount: tuiRaw.length - supplementalCandidates.length,
         supplementalTuiIds: supplementalTui.map(item => item.id),
       })
