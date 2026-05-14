@@ -192,6 +192,23 @@ describe('session DB compression lineage', () => {
     })
   })
 
+  it('keeps the root title when a continuation session title is suffixed with #2/#3', async () => {
+    seedCompressionChain(db!)
+
+    const mod = await import('../../packages/server/src/db/hermes/sessions-db')
+    const rows = await mod.listSessionSummaries(undefined, 20)
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.id).toBe('root')
+    expect(rows[0]?.title).toBe('Mermaid fix')
+
+    const detailFromRoot = await mod.getSessionDetailFromDb('root')
+    expect(detailFromRoot?.title).toBe('Mermaid fix')
+
+    const detailFromTip = await mod.getSessionDetailFromDb('tip')
+    expect(detailFromTip?.title).toBe('Mermaid fix')
+  })
+
   it('merges an orphan session that starts immediately after compression', async () => {
     insertSession(db!, {
       id: 'root',
@@ -355,7 +372,7 @@ describe('session DB compression lineage', () => {
 
     expect(detail).toMatchObject({
       id: 'tip',
-      title: 'Mermaid fix #3',
+      title: 'Mermaid fix',
       message_count: 9,
       thread_session_count: 3,
     })
@@ -397,7 +414,7 @@ describe('session DB compression lineage', () => {
 
     expect(detail).toMatchObject({
       id: 'root',
-      title: 'Latest branch',
+      title: 'root',
       message_count: 2,
       thread_session_count: 2,
     })
@@ -406,7 +423,7 @@ describe('session DB compression lineage', () => {
     const olderDetail = await mod.getSessionDetailFromDb('older-child')
     expect(olderDetail).toMatchObject({
       id: 'older-child',
-      title: 'Older branch',
+      title: 'root',
       message_count: 2,
       thread_session_count: 2,
     })
